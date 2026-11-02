@@ -22,8 +22,13 @@
 | 工具/skill 意图白名单 | `ToolPolicyTest` 6 + `AgentPolicyIT` |
 | 商品 ID 白名单（猜测 ID 拒绝、显式/检索 ID 允许） | `AgentPolicyIT` |
 | 取消：数据库状态 + 模型 HTTP 请求中止 + 后续步骤停止 | `AgentPolicyIT` |
+| 流中途停顿时取消：主动关闭响应流，不等上游恢复 | `AgentPolicyIT.cancellationStopsMidStreamPause` |
+| 客户端断连：心跳 + `checkError()` 检测并停止上游 | `AgentPolicyIT.clientDisconnectStopsRun` |
 | 真实增量流 + 跨分块 `<final>`/标签解析 | `AgentPolicyIT`（stub SSE） |
 | 并发消息/run 幂等、并发加购数量 | `IdempotencyIT` 2 |
+| Nacos Go 格式（`configs` 数组）/legacy Map 读取与发布 | `NacosConfigClientTest` |
+| Nacos 新增敏感键默认脱敏 | `ConfigServiceTest.newRemoteSecretKeyIsMasked` |
+| 图片 bootstrap SQL 列名限定 | `VectorBootstrapIT` |
 | 向导建议、测评接口/看板、配置读写、TTS 未配置 501 | `P6FlowIT` |
 | 商品导入 294 商品/973 SKU/1121 文档/1962 chunk | 导入命令实测 |
 | 空库 Flyway V1、最终 schema 副本显式 baseline | 手动实测 |
@@ -43,8 +48,8 @@ mvnw verify -DskipITs=false
 最近一次结果：
 
 ```text
-Tests run: 41, Failures: 0, Errors: 0, Skipped: 0        # surefire
-Tests run: 9,  Failures: 0, Errors: 0, Skipped: 1        # failsafe（Takeover 未提供环境）
+Tests run: 43, Failures: 0, Errors: 0, Skipped: 0        # surefire
+Tests run: 12, Failures: 0, Errors: 0, Skipped: 1        # failsafe（Takeover 未提供环境）
 BUILD SUCCESS
 ```
 
@@ -57,16 +62,18 @@ BUILD SUCCESS
 | 真实模型 Agent | OpenAI 兼容 `stream=true`、ReAct、角色模型、Prompt DB | 无真实 Key；stub 只验证协议/策略/取消 |
 | 语音 TTS/ASR | 讯飞/豆包签名、WSS/HTTP、WebSocket 代理 | 无密钥，未实测 |
 | MinIO 上传/下载 | `ObjectStorage`、`/api/v1/files` | 本机 MinIO 未启动，未做 bucket 往返 |
-| Prompt 全量默认值 | 7 个简化默认 Prompt + DB 草稿/发布 | 未逐字迁移 Go 全部 Prompt/意图 Prompt |
-| 规划/记忆模型链路 | 关键词意图 + 可选模型 ReAct；最近 5 条对话 | 未迁移 need_summary/memory_retrieval/一级 route 模型规划 |
 | 测评报告详情 | 看板扫描 + 报告文件读取 | 无真实报告文件；Node 脚本未对 Java 运行 |
+| Web/Android 客户端联调 | 客户端代码存在 | 未构建、未运行真实客户端 |
+| Node `quality/evals` 联调 | 脚本存在 | 未对 Java API 执行 |
 
 ## 3. 未实现
 
 | 能力 | 说明 |
 |---|---|
-| Web/Android 客户端联调 | 未构建、未运行真实客户端 |
-| Node `quality/evals` 对 Java API 的联调 | 未执行 |
+| Go 全量默认 Prompt / 意图 Prompt 逐字迁移 | 只有 7 个简化默认 Prompt；`agent.prompt.intent.*` 未迁移 |
+| 一级模型规划（route/P1–P6 模型判定） | 当前为关键词意图分类，未调用模型规划 |
+| `need_summary` 模型流程 | 未实现 |
+| `memory_retrieval` 模型流程 | 当前只取最近 5 条对话，未做模型抽取 |
 | 真实旧库“缺列”升级验证 | 仅验证最终 schema 副本 baseline |
 | 生产部署、真实数据切换 | 明确未执行 |
 | 原系统 mock 支付/优惠抵扣/退款售后扩展 | 保持原边界，不新增 |
@@ -77,10 +84,13 @@ BUILD SUCCESS
 - 工具/skill 意图白名单在执行层强制，不再只写 Prompt。
 - 商品 ID 白名单：模型猜测 ID 被拒绝；用户显式 ID 或本轮检索结果可用。
 - 取消：模型 HTTP 请求可中止，工具调用前检查，取消后不再启动后续步骤。
+- 流中途停顿：watchdog 主动关闭上游响应流，不再阻塞在 `readLine()`。
+- 客户端断连：SSE 心跳 + `PrintWriter.checkError()`，检测后停止上游。
 - 真实增量流：`stream=true` 解析 SSE delta；`<final>` 标签跨分块状态机。
+- Nacos：兼容 Go 的 `{"configs":[...]}`、legacy Map、domain 拆分 data id；新增敏感键默认脱敏。
+- Milvus：建集合/写入/加载/bootstrap；图片 SQL 使用 `p.` 限定列名。
 - Failsafe 接入：`-DskipITs=false` 一条命令跑全部集成测试。
-- 并发幂等测试、误操作防护测试、取消测试、跨分块解析测试。
-- Nacos 客户端/动态配置、Milvus 建集合/写入/bootstrap。
+- 并发幂等测试、误操作防护测试、取消/断连测试、跨分块解析测试。
 
 ## 5. 下一步
 

@@ -6,6 +6,7 @@ import com.xzxg.shop.common.PageRequest;
 import com.xzxg.shop.common.PageResponse;
 import com.xzxg.shop.common.api.ApiException;
 import com.xzxg.shop.common.web.RequestContext;
+import com.xzxg.shop.config.ShopProperties;
 import com.xzxg.shop.domain.Account;
 import com.xzxg.shop.domain.AgentBlock;
 import com.xzxg.shop.domain.AgentRun;
@@ -24,6 +25,10 @@ import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -41,12 +46,14 @@ public class AgentController {
     private final AgentRepository repository;
     private final AgentRuntime runtime;
     private final ObjectMapper objectMapper;
+    private final long heartbeatMs;
 
     public AgentController(AgentRepository repository, AgentRuntime runtime,
-                           ObjectMapper objectMapper) {
+                           ObjectMapper objectMapper, ShopProperties properties) {
         this.repository = repository;
         this.runtime = runtime;
         this.objectMapper = objectMapper;
+        this.heartbeatMs = Math.max(200, properties.getAgent().getSseHeartbeatMs());
     }
 
     public record CreateSessionRequest(String title) {
@@ -200,27 +207,60 @@ public class AgentController {
         StringBuilder content = new StringBuilder();
         StringBuilder currentText = new StringBuilder();
         Object lock = new Object();
+        AtomicBoolean clientGone = new AtomicBoolean(false);
+        ScheduledExecutorService heartbeat = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "sse-heartbeat");
+            thread.setDaemon(true);
+            return thread;
+        });
+        heartbeat.scheduleAtFixedRate(() -> {
+            synchronized (lock) {
+                if (clientGone.get()) {
+                    return;
+                }
+                try {
+                    writer.write(": ping\n\n");
+                    writer.flush();
+                    if (writer.checkError()) {
+                        clientGone.set(true);
+                    }
+                } catch (RuntimeException ex) {
+                    clientGone.set(true);
+                }
+            }
+        }, heartbeatMs, heartbeatMs, TimeUnit.MILLISECONDS);
 
         AgentRuntime.Emitter emitter = event -> {
             synchronized (lock) {
+                if (clientGone.get()) {
+                    throw new IOException("sse client disconnected");
+                }
                 accumulate(event, content, currentText, blocks, followups, segments);
                 writer.write("event: " + event.type() + "\n");
                 writer.write("data: " + objectMapper.writeValueAsString(event) + "\n\n");
                 writer.flush();
+                if (writer.checkError()) {
+                    clientGone.set(true);
+                    throw new IOException("sse client disconnected");
+                }
             }
         };
 
         try {
             runtime.stream(runResult.run(), created.message(), emitter,
-                    () -> repository.isRunCanceled(runResult.run().runId()));
+                    () -> repository.isRunCanceled(runResult.run().runId()) || clientGone.get());
         } catch (IOException ex) {
             repository.updateRunStatus(user.accountId(), runResult.run().runId(), "canceled");
             throw ex;
+        } finally {
+            heartbeat.shutdownNow();
         }
         flushText(currentText, segments);
         repository.updateRunResult(user.accountId(), runResult.run().runId(),
                 content.toString().trim(), blocks, followups, segments);
-        if (!repository.isRunCanceled(runResult.run().runId())) {
+        if (clientGone.get()) {
+            repository.updateRunStatus(user.accountId(), runResult.run().runId(), "canceled");
+        } else if (!repository.isRunCanceled(runResult.run().runId())) {
             repository.updateRunStatus(user.accountId(), runResult.run().runId(), "completed");
         }
     }
@@ -308,7 +348,8 @@ public class AgentController {
         segments.add(new AgentSegment("thinking", null, null, step));
     }
 
-    private void writeSnapshot(PrintWriter writer, AgentRun run, String code, String message) {
+    private void writeSnapshot(PrintWriter writer, AgentRun run, String code, String message)
+            throws IOException {
         List<SSEEvent> events = List.of(
                 new SSEEvent("message_start", run.runId(), run.sessionId(), null, run.traceId(),
                         null, null, null, null, null, null, null, null, null),
@@ -318,6 +359,9 @@ public class AgentController {
             writer.write("event: " + event.type() + "\n");
             writer.write("data: " + objectMapper.writeValueAsString(event) + "\n\n");
             writer.flush();
+            if (writer.checkError()) {
+                throw new IOException("sse client disconnected");
+            }
         }
     }
 

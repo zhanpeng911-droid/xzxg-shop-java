@@ -441,6 +441,7 @@ public class ShopProperties {
         private String largeModel = "qwen3.7-plus";
         private boolean enableThinking = false;
         private double temperature = 0.3;
+        private long sseHeartbeatMs = 5000;
 
         public String getBaseUrl() {
             return baseUrl;
@@ -488,6 +489,14 @@ public class ShopProperties {
 
         public void setTemperature(double temperature) {
             this.temperature = temperature;
+        }
+
+        public long getSseHeartbeatMs() {
+            return sseHeartbeatMs;
+        }
+
+        public void setSseHeartbeatMs(long sseHeartbeatMs) {
+            this.sseHeartbeatMs = sseHeartbeatMs;
         }
     }
 

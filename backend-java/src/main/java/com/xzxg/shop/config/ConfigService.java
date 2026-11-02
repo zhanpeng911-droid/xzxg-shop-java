@@ -60,29 +60,35 @@ public class ConfigService {
         }
         try {
             var remote = client.load();
-            if (remote.isPresent()) {
-                mergeRemote(remote.get());
-                applyToProperties();
+            if (!remote.isEmpty()) {
+                mergeRemote(remote);
             } else {
-                client.publish(snapshot());
+                client.publish(listRaw());
             }
         } catch (Exception ex) {
             log.warn("nacos config unavailable, using defaults: {}", ex.getMessage());
         }
     }
 
-    public void mergeRemote(Map<String, String> values) {
-        for (Map.Entry<String, String> entry : values.entrySet()) {
-            String key = entry.getKey();
+    public void mergeRemote(List<AppConfig> items) {
+        for (AppConfig item : items) {
+            String key = item.configKey();
             if (key == null || key.isBlank() || key.startsWith("agent.prompt.")) {
                 continue;
             }
             AppConfig existing = configs.get(key);
-            configs.put(key, new AppConfig(key, entry.getValue() == null ? "" : entry.getValue(),
-                    existing == null ? "string" : existing.valueType(),
-                    existing == null ? "" : existing.description(),
-                    existing == null ? domainFor(key) : existing.domain(),
-                    existing != null && existing.isSecret(), GoTime.format(LocalDateTime.now())));
+            boolean secret = item.isSecret()
+                    || (existing != null && existing.isSecret())
+                    || NacosConfigClient.isSecretKey(key);
+            configs.put(key, new AppConfig(key, item.configValue() == null ? "" : item.configValue(),
+                    item.valueType() == null || item.valueType().isBlank()
+                            ? (existing == null ? "string" : existing.valueType()) : item.valueType(),
+                    item.description() == null || item.description().isBlank()
+                            ? (existing == null ? "" : existing.description()) : item.description(),
+                    item.domain() == null || item.domain().isBlank()
+                            ? (existing == null ? domainFor(key) : existing.domain())
+                            : item.domain(),
+                    secret, GoTime.format(LocalDateTime.now())));
         }
         applyToProperties();
     }
@@ -136,10 +142,21 @@ public class ConfigService {
         return items;
     }
 
+    public List<AppConfig> list() {
+        return listRaw().stream().map(this::masked).toList();
+    }
+
+    public List<AppConfig> listRaw() {
+        List<AppConfig> items = new ArrayList<>(configs.values());
+        items.sort(Comparator.comparing(AppConfig::configKey));
+        return items;
+    }
+
     public Map<String, String> snapshot() {
         Map<String, String> values = new LinkedHashMap<>();
-        configs.values().stream().sorted(Comparator.comparing(AppConfig::configKey))
-                .forEach(item -> values.put(item.configKey(), item.configValue()));
+        for (AppConfig item : listRaw()) {
+            values.put(item.configKey(), item.configValue());
+        }
         return values;
     }
 
@@ -149,16 +166,10 @@ public class ConfigService {
             return;
         }
         try {
-            client.publish(snapshot());
+            client.publish(listRaw());
         } catch (Exception ex) {
             log.warn("nacos publish failed: {}", ex.getMessage());
         }
-    }
-
-    public List<AppConfig> list() {
-        List<AppConfig> items = new ArrayList<>(configs.values());
-        items.sort(Comparator.comparing(AppConfig::configKey));
-        return items;
     }
 
     public AppConfig update(String key, String value, String valueType, String description,
@@ -187,12 +198,11 @@ public class ConfigService {
     }
 
     private static boolean isSecretKey(String key) {
-        String lower = key.toLowerCase(Locale.ROOT);
-        return lower.contains("key") || lower.contains("secret");
+        return NacosConfigClient.isSecretKey(key);
     }
 
     private static String domainFor(String key) {
-        return key.startsWith("ai.") ? "app" : "infra";
+        return NacosConfigClient.domainForKey(key);
     }
 
     private static String mask(AppConfig item) {

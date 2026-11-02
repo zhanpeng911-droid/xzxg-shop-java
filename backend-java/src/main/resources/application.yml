@@ -92,6 +92,7 @@ shop:
     small-model: ${AI_SMALL_MODEL:qwen3.5-flash}
     large-model: ${AI_LARGE_MODEL:qwen3.7-plus}
     enable-thinking: ${AI_ENABLE_THINKING:false}
+    sse-heartbeat-ms: ${SHOP_SSE_HEARTBEAT_MS:5000}
   speech:
     realtime:
       app-id: ${XUNFEI_APP_ID:}

@@ -189,26 +189,7 @@ public class VectorBootstrapService implements ApplicationRunner {
             if (milvus.collectionHasRows(vectorConfig.getImageCollection())) {
                 return;
             }
-            List<ImageTask> tasks = new ArrayList<>();
-            jdbc.query("""
-                    SELECT product_id, merchant_id, category_id, brand, image_url,
-                           image_urls_json
-                    FROM products p
-                    JOIN merchants m ON m.merchant_id = p.merchant_id
-                    WHERE p.status = 'active' AND m.status = 'active'
-                    ORDER BY p.product_id
-                    """, rs -> {
-                List<String> urls = json.stringList(rs.getString("image_urls_json"));
-                if (urls.isEmpty() && !nullToEmpty(rs.getString("image_url")).isEmpty()) {
-                    urls = List.of(rs.getString("image_url"));
-                }
-                for (int index = 0; index < urls.size(); index++) {
-                    tasks.add(new ImageTask("img_" + rs.getString("product_id") + "_" + index,
-                            rs.getString("product_id"), rs.getString("merchant_id"),
-                            rs.getString("category_id"), rs.getString("brand"), urls.get(index),
-                            index == 0 ? "main" : "detail"));
-                }
-            });
+            List<ImageTask> tasks = imageTasks();
             List<Map<String, Object>> rows = new ArrayList<>();
             int dimension = 0;
             for (ImageTask task : tasks) {
@@ -245,6 +226,30 @@ public class VectorBootstrapService implements ApplicationRunner {
         } catch (Exception ex) {
             log.warn("image vector bootstrap failed: {}", ex.getMessage());
         }
+    }
+
+    List<ImageTask> imageTasks() {
+        List<ImageTask> tasks = new ArrayList<>();
+        jdbc.query("""
+                SELECT p.product_id, p.merchant_id, p.category_id, p.brand, p.image_url,
+                       p.image_urls_json
+                FROM products p
+                JOIN merchants m ON m.merchant_id = p.merchant_id
+                WHERE p.status = 'active' AND m.status = 'active'
+                ORDER BY p.product_id
+                """, rs -> {
+            List<String> urls = json.stringList(rs.getString("image_urls_json"));
+            if (urls.isEmpty() && !nullToEmpty(rs.getString("image_url")).isEmpty()) {
+                urls = List.of(rs.getString("image_url"));
+            }
+            for (int index = 0; index < urls.size(); index++) {
+                tasks.add(new ImageTask("img_" + rs.getString("product_id") + "_" + index,
+                        rs.getString("product_id"), rs.getString("merchant_id"),
+                        rs.getString("category_id"), rs.getString("brand"), urls.get(index),
+                        index == 0 ? "main" : "detail"));
+            }
+        });
+        return tasks;
     }
 
     private static byte[] readImage(String source) throws Exception {
@@ -305,7 +310,7 @@ public class VectorBootstrapService implements ApplicationRunner {
         return value == null ? "" : value;
     }
 
-    private record ImageTask(String vectorId, String productId, String merchantId,
-                             String categoryId, String brand, String source, String imageType) {
+    record ImageTask(String vectorId, String productId, String merchantId,
+                     String categoryId, String brand, String source, String imageType) {
     }
 }

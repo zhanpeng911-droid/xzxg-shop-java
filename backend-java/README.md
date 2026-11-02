@@ -102,7 +102,7 @@ documents and chunks. It never runs on normal API startup.
 
 ## Known gaps
 
-See `../docs/migration/KNOWN_DIFFERENCES.md`. The important ones: MinIO/Milvus
-and voice/model providers are implemented but not live-tested; Nacos is not
-wired; LLM streaming is chunked post-completion; some prompt/planner details are
-simplified.
+See `../docs/migration/KNOWN_DIFFERENCES.md`. The important ones: MinIO/Milvus,
+Nacos, and voice/model providers are implemented but not live-tested; the full
+Go prompt/planner/memory model chain is not implemented; Web/Android and Node
+eval integration has not been run.

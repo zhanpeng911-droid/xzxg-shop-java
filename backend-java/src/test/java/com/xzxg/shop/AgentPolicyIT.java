@@ -34,7 +34,8 @@ import tools.jackson.databind.ObjectMapper;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
                 "shop.agent.api-key=stub",
-                "shop.agent.small-model=stub-model"
+                "shop.agent.small-model=stub-model",
+                "shop.agent.sse-heartbeat-ms=200"
         })
 @ActiveProfiles("mysql-it")
 class AgentPolicyIT {
@@ -105,6 +106,74 @@ class AgentPolicyIT {
         JsonNode detail = json(call("GET", "/api/v1/agent/sessions/" + sessionId, token, null));
         assertThat(detail.get("messages").get(0).get("runs").get(0).get("status").asText())
                 .isEqualTo("canceled");
+    }
+
+    @Test
+    void cancellationStopsMidStreamPause() throws Exception {
+        String token = registerUser();
+        String sessionId = createSession(token);
+        long startedAt = System.nanoTime();
+        CompletableFuture<HttpResponse<String>> pending = CompletableFuture.supplyAsync(() -> {
+            try {
+                return call("POST", streamPath(sessionId), token,
+                        "{\"client_message_id\":\"policy-midstream\","
+                                + "\"content\":\"POLICY_CANCEL_MIDSTREAM 推荐拍照手机\"}");
+            } catch (Exception ex) {
+                throw new IllegalStateException(ex);
+            }
+        });
+        Thread.sleep(1200);
+        String runId = runIdOf(sessionId, token);
+        assertThat(runId).isNotBlank();
+        HttpResponse<String> cancel = call("POST", "/api/v1/agent/runs/" + runId + ":cancel",
+                token, null);
+        assertThat(cancel.statusCode()).isEqualTo(200);
+        HttpResponse<String> streamed = pending.get(4, TimeUnit.SECONDS);
+        long elapsedMs = (System.nanoTime() - startedAt) / 1_000_000;
+        assertThat(elapsedMs).isLessThan(6000);
+        assertThat(streamed.body()).contains("\"code\":\"canceled\"");
+        JsonNode detail = json(call("GET", "/api/v1/agent/sessions/" + sessionId, token, null));
+        assertThat(detail.get("messages").get(0).get("runs").get(0).get("status").asText())
+                .isEqualTo("canceled");
+    }
+
+    @Test
+    void clientDisconnectStopsRun() throws Exception {
+        String token = registerUser();
+        String sessionId = createSession(token);
+        java.net.Socket socket = new java.net.Socket("127.0.0.1", port);
+        socket.setSoTimeout(5000);
+        String body = "{\"client_message_id\":\"policy-disconnect\","
+                + "\"content\":\"POLICY_CANCEL_MIDSTREAM 推荐拍照手机\"}";
+        byte[] bodyBytes = body.getBytes(StandardCharsets.UTF_8);
+        String headers = "POST " + streamPath(sessionId) + " HTTP/1.1\r\n"
+                + "Host: 127.0.0.1\r\n"
+                + "Authorization: Bearer " + token + "\r\n"
+                + "Content-Type: application/json\r\n"
+                + "Content-Length: " + bodyBytes.length + "\r\n"
+                + "Connection: close\r\n\r\n";
+        socket.getOutputStream().write(headers.getBytes(StandardCharsets.UTF_8));
+        socket.getOutputStream().write(bodyBytes);
+        socket.getOutputStream().flush();
+        byte[] buffer = new byte[4096];
+        int read = socket.getInputStream().read(buffer);
+        assertThat(read).isPositive();
+        socket.close();
+
+        String status = "";
+        for (int i = 0; i < 40; i++) {
+            Thread.sleep(150);
+            JsonNode detail = json(call("GET", "/api/v1/agent/sessions/" + sessionId,
+                    token, null));
+            JsonNode runs = detail.get("messages").get(0).get("runs");
+            if (!runs.isEmpty()) {
+                status = runs.get(0).get("status").asText();
+                if ("canceled".equals(status)) {
+                    break;
+                }
+            }
+        }
+        assertThat(status).isEqualTo("canceled");
     }
 
     private String registerUser() throws Exception {
@@ -183,6 +252,10 @@ class AgentPolicyIT {
         String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
         String content;
         boolean finalAnswer = false;
+        if (body.contains("POLICY_CANCEL_MIDSTREAM")) {
+            sendPartialStream(exchange);
+            return;
+        }
         if (body.contains("POLICY_CANCEL")) {
             sleepQuietly(8000);
             content = "超时未取消";
@@ -219,6 +292,27 @@ class AgentPolicyIT {
         }
     }
 
+    private static void sendPartialStream(HttpExchange exchange) throws IOException {
+        exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+        exchange.sendResponseHeaders(200, 0);
+        try {
+            String first = "data: " + MAPPER.writeValueAsString(Map.of(
+                    "choices", List.of(Map.of("delta", Map.of("content", "<final>部分"))))) + "\n\n";
+            exchange.getResponseBody().write(first.getBytes(StandardCharsets.UTF_8));
+            exchange.getResponseBody().flush();
+            sleepQuietly(8000);
+            String rest = "data: " + MAPPER.writeValueAsString(Map.of(
+                    "choices", List.of(Map.of("delta", Map.of("content", "回答</final>"))))) + "\n\n"
+                    + "data: [DONE]\n\n";
+            exchange.getResponseBody().write(rest.getBytes(StandardCharsets.UTF_8));
+            exchange.getResponseBody().flush();
+        } catch (IOException ignored) {
+            // client canceled/closed
+        } finally {
+            exchange.close();
+        }
+    }
+
     private static void sendJson(HttpExchange exchange, String content) throws IOException {
         String json = MAPPER.writeValueAsString(Map.of(
                 "choices", List.of(Map.of("message", Map.of("content", content)))));
@@ -229,8 +323,7 @@ class AgentPolicyIT {
         exchange.close();
     }
 
-    private static void sendStream(HttpExchange exchange, String content) throws IOException {
-        exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+    private static void sendStream(HttpExchange exchange, String content) throws IOException {        exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
         exchange.sendResponseHeaders(200, 0);
         try {
             int chunkSize = 3;

@@ -21,24 +21,24 @@ mvnw verify -DskipITs=false
 ## 2. 最近一次结果
 
 ```text
-Surefire:   Tests run: 41, Failures: 0, Errors: 0, Skipped: 0
-Failsafe:   Tests run: 9,  Failures: 0, Errors: 0, Skipped: 1
+Surefire:   Tests run: 43, Failures: 0, Errors: 0, Skipped: 0
+Failsafe:   Tests run: 12, Failures: 0, Errors: 0, Skipped: 1
 BUILD SUCCESS
 ```
 
 跳过项：`TakeoverBaselineIT`（未设置 `SHOP_TAKEOVER_URL`，按设计跳过）。
 
-### 单元/基础设施测试（41）
+### 单元/基础设施测试（43）
 
 - 请求 ID、CORS、限流、体积限制、错误对象、可信代理
 - 固定窗口边界、CIDR、客户端 IP
 - 文档分块、HTML/JSON 入库解析
 - 64 维直方图（透明像素/桶边界）
 - 工具/skill 意图策略、常见查询分类
-- Nacos 配置映射与密钥脱敏
+- Nacos 配置映射、敏感键脱敏、Go/legacy 两种数据格式
 - Milvus REST 建集合/写入/加载/查询载荷
 
-### 集成测试（9，1 跳过）
+### 集成测试（12，1 跳过）
 
 | 测试 | 验证内容 |
 |---|---|
@@ -47,8 +47,9 @@ BUILD SUCCESS
 | P4FlowIT | 入库/去重、关键词召回、图片搜索降级 |
 | P5FlowIT | SSE 帧序、重复消息、历史 segments、trace、置顶/摘要 |
 | P6FlowIT | 向导建议、测评/看板、配置读写、TTS 501 |
-| AgentPolicyIT | 工具白名单、商品 ID 白名单、取消中止、真实增量流、跨分块 `<final>` |
+| AgentPolicyIT | 工具白名单、商品 ID 白名单、取消、流中途停顿时取消、断连停止、增量流、跨分块 `<final>` |
 | IdempotencyIT | 8 并发同 client_message_id 仅 1 消息/1 run；8 并发加购数量=8 |
+| VectorBootstrapIT | 图片 bootstrap SQL 列名限定，返回种子商品 |
 | TakeoverBaselineIT | 未设置环境时跳过 |
 
 ## 3. 其他实测

@@ -25,7 +25,10 @@ public class NacosRefreshJob {
             initialDelayString = "${shop.nacos.refresh-ms:30000}")
     public void refresh() {
         try {
-            client.load().ifPresent(configs::mergeRemote);
+            var items = client.load();
+            if (!items.isEmpty()) {
+                configs.mergeRemote(items);
+            }
         } catch (Exception ex) {
             log.debug("nacos refresh failed, keeping current config: {}", ex.getMessage());
         }

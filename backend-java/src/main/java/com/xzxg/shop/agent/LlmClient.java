@@ -162,8 +162,31 @@ public class LlmClient {
             }
         }
         StringBuilder collected = new StringBuilder();
+        InputStream body = response.body();
+        java.util.concurrent.atomic.AtomicBoolean finished =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        Thread watchdog = new Thread(() -> {
+            while (!finished.get()) {
+                if (canceled.getAsBoolean() || System.nanoTime() > deadline) {
+                    try {
+                        body.close();
+                    } catch (Exception ignored) {
+                        // closing the stream unblocks readLine promptly
+                    }
+                    return;
+                }
+                try {
+                    Thread.sleep(50);
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }, "llm-stream-watchdog");
+        watchdog.setDaemon(true);
+        watchdog.start();
         try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
+                new InputStreamReader(body, StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
                 if (canceled.getAsBoolean()) {
@@ -189,11 +212,23 @@ public class LlmClient {
             }
         } catch (CancellationException ex) {
             throw ex;
-        } catch (RuntimeException ex) {
+        } catch (java.io.IOException | RuntimeException ex) {
             if (canceled.getAsBoolean()) {
                 throw new CancellationException("run canceled");
             }
+            if (System.nanoTime() > deadline) {
+                throw new IllegalStateException("llm stream timeout");
+            }
             throw ex;
+        } finally {
+            finished.set(true);
+            watchdog.interrupt();
+        }
+        if (canceled.getAsBoolean()) {
+            throw new CancellationException("run canceled");
+        }
+        if (System.nanoTime() > deadline) {
+            throw new IllegalStateException("llm stream timeout");
         }
         return collected.toString();
     }
