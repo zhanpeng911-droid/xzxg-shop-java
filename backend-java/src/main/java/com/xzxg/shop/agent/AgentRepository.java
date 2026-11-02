@@ -10,6 +10,7 @@ import com.xzxg.shop.domain.AgentSegment;
 import com.xzxg.shop.domain.Attachment;
 import com.xzxg.shop.domain.ChatSession;
 import com.xzxg.shop.domain.ChatSessionDetail;
+import com.xzxg.shop.domain.ProductCard;
 import com.xzxg.shop.domain.UserMessage;
 import com.xzxg.shop.domain.UserMessageWithRuns;
 import java.sql.ResultSet;
@@ -389,9 +390,10 @@ public class AgentRepository {
 
     public List<MemoryRecord> recentConversations(String accountId, String sessionId, int limit) {
         int effective = limit <= 0 || limit > 20 ? 5 : limit;
-        return jdbc.query("""
+        List<MemoryRecord> newestFirst = jdbc.query("""
                 SELECT m.message_id, m.content AS user_query,
                        COALESCE(r.run_id, '') AS run_id, COALESCE(r.content, '') AS final_answer,
+                       COALESCE(CAST(r.blocks_json AS CHAR), '') AS blocks_json,
                        m.created_at
                 FROM user_messages m
                 LEFT JOIN agent_runs r ON r.message_id = m.message_id
@@ -399,12 +401,40 @@ public class AgentRepository {
                 WHERE m.account_id = ? AND m.session_id = ? AND m.content <> ''
                 ORDER BY m.created_at DESC, m.message_id DESC
                 LIMIT ?
-                """, (rs, rowNum) -> new MemoryRecord(
-                rs.getString("run_id"), rs.getString("user_query"),
-                rs.getString("final_answer")), accountId, sessionId, effective);
+                """, (rs, rowNum) -> {
+            List<AgentBlock> blocks = json.readList(rs.getString("blocks_json"),
+                    new TypeReference<List<AgentBlock>>() {
+                    });
+            List<String> productIds = new ArrayList<>();
+            List<ProductCard> productRefs = new ArrayList<>();
+            for (AgentBlock block : blocks) {
+                if (block.productIds() != null) {
+                    for (String id : block.productIds()) {
+                        if (id != null && !id.isBlank() && !productIds.contains(id)) {
+                            productIds.add(id);
+                        }
+                    }
+                }
+                if (block.product() != null
+                        && !productIds.contains(block.product().productId())) {
+                    productIds.add(block.product().productId());
+                    productRefs.add(block.product());
+                }
+            }
+            Timestamp createdAt = rs.getTimestamp("created_at");
+            return new MemoryRecord(rs.getString("run_id"), rs.getString("user_query"),
+                    rs.getString("final_answer"),
+                    GoTime.format(createdAt == null ? null : createdAt.toLocalDateTime()),
+                    productIds, productRefs);
+        }, accountId, sessionId, effective);
+        List<MemoryRecord> chronological = new ArrayList<>(newestFirst);
+        java.util.Collections.reverse(chronological);
+        return chronological;
     }
 
-    public record MemoryRecord(String runId, String userQuery, String finalAnswer) {
+    public record MemoryRecord(String runId, String userQuery, String finalAnswer,
+                               String createdAt, List<String> productIds,
+                               List<ProductCard> productRefs) {
     }
 
     private ChatSession mapSession(ResultSet rs) throws SQLException {

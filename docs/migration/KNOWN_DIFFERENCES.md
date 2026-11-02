@@ -39,6 +39,12 @@
 | 迁移工具 | Flyway + 显式 baseline | 幂等 SQL | 结构可审计 |
 | 头像静态 404 | 空 404 | 纯文本 | 低风险 |
 | Nacos | 已实现客户端/刷新；未连接真实 Nacos | Nacos + 内存降级 | 真实持久化与刷新未验证 |
+| 无语料模型兜底 | 关键词规划 + 本地导购/固定动作 | Go 无 LLM 时 `non_guide/unsupported` + `buildAnswer` | 本地体验更好，但不是 Go 原行为 |
+| 记忆窗口 | 最近 5 轮，未按 `memory.window_hours` 过滤 | 24 小时内 + 5 轮 | 长会话可能引用过旧轮次 |
+| 追问生成 | 只传 query/route/intent | 传 query + 本轮回答 | 追问相关性略低 |
+| need_summary | 同步调用后进入工具 | goroutine 异步，完成后发 thinking | 首 token 延迟略高 |
+| 滚动摘要 | 本轮回答结束后同步更新 | 后台 goroutine | 请求结束稍慢 |
+| Prompt 升级 | 只识别已登记的 7 个旧简化文本 | Go 只补缺失、不升级旧值 | 更早的未知默认值不会被自动替换 |
 
 ## 3. 已实现但未联调（不得当作已验证）
 
@@ -47,7 +53,7 @@
 | MinIO 文件上传/下载 | `ObjectStorage` + `/api/v1/files` + `stored_files` | 本机无 MinIO，未做 bucket 往返 |
 | Milvus 检索/写入 | REST search + 建集合/upsert/load + 文本/图片 bootstrap | 只做了 REST stub 单测；未连接真实 Milvus |
 | Nacos 配置 | v1 API 读取/发布 + 定时刷新 + 驱动 CORS/限流/体积/代理/vector 开关 | 未连接真实 Nacos |
-| 真实模型 Agent | `stream=true` 增量 SSE、ReAct JSON、角色模型、Prompt DB | 无 API Key；stub 只验证协议/策略/取消 |
+| 真实模型 Agent | 完整 Go Prompt/规划/记忆链路 + `stream=true` 增量 SSE、ReAct、角色模型 | 无 API Key；stub 验证协议/策略/取消/角色/记忆 |
 | 语音 TTS | 讯飞 WSS 签名 + 豆包 HTTP 适配 | 无密钥，未实测 |
 | 实时 ASR | WebSocket 代理、控制帧、ready/partial/final | 无密钥，未实测 |
 | Prompt DB 草稿/发布 | 数据库读写/版本/发布记录 | 未跑真实发布往返 |
@@ -58,10 +64,10 @@
 
 | 能力 | 说明 |
 |---|---|
-| Go 全量默认 Prompt / 意图 Prompt | 当前只有 7 个简化默认 Prompt，未迁移 `agent.prompt.intent.*` 等全部常量 |
-| 一级模型规划（route/P1–P6 模型判定） | 当前为关键词意图分类，未按 Go 的 planner 模型调用 |
-| `need_summary` 模型流程 | 未实现 |
-| `memory_retrieval` 模型流程 | 只是最近 5 条对话，未做模型抽取与相关记忆筛选 |
+| 真实旧库“缺列”升级验证 | 仅验证最终 schema 副本 baseline |
+| 生产部署、真实数据切换 | 明确未执行 |
+| 原系统 mock 支付/优惠抵扣/退款售后扩展 | 保持原边界，不新增 |
+| 向量新建集合后的增量同步任务 | 只有启动 bootstrap，无持续同步 |
 
 ## 5. 原系统既有缺口（不扩大范围）
 

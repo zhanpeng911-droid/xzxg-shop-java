@@ -51,6 +51,64 @@ public class PromptRepository {
     public record PromptSeed(String key, String title, String content, String description) {
     }
 
+    /**
+     * Seeds a missing prompt, or upgrades a row whose content is still one of the
+     * legacy simplified defaults. User-customized content is never overwritten.
+     */
+    public void seedOrUpgrade(PromptSeed seed, List<String> legacyDefaults) {
+        transactions.execute(status -> {
+            List<AgentPrompt> active = jdbc.query("""
+                    SELECT prompt_id, prompt_key, title, content, status, version,
+                           COALESCE(description, '') AS description, created_by, published_at,
+                           created_at, updated_at
+                    FROM agent_prompts
+                    WHERE prompt_key = ? AND status = 'active'
+                    ORDER BY version DESC
+                    LIMIT 1
+                    """, (rs, rowNum) -> map(rs), seed.key());
+            LocalDateTime now = LocalDateTime.now();
+            String newContent = seed.content().trim();
+            if (!active.isEmpty()) {
+                AgentPrompt current = active.get(0);
+                String currentContent = current.content() == null ? "" : current.content().trim();
+                boolean legacy = legacyDefaults.stream()
+                        .anyMatch(value -> value.trim().equals(currentContent));
+                if (legacy && !currentContent.equals(newContent)) {
+                    Integer maxVersion = jdbc.queryForObject("""
+                            SELECT COALESCE(MAX(version), 0) FROM agent_prompts WHERE prompt_key = ?
+                            """, Integer.class, seed.key());
+                    int version = (maxVersion == null ? 0 : maxVersion) + 1;
+                    jdbc.update("UPDATE agent_prompts SET status = 'archived', updated_at = ?"
+                            + " WHERE prompt_id = ?", Timestamp.valueOf(now), current.promptId());
+                    jdbc.update("""
+                            INSERT INTO agent_prompts (prompt_id, prompt_key, title, content, status,
+                                                       version, description, created_by,
+                                                       published_at, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, 'active', ?, ?, 'system', ?, ?, ?)
+                            """, Ids.next("prm"), seed.key(), seed.title(), seed.content(),
+                            version, seed.description(), Timestamp.valueOf(now),
+                            Timestamp.valueOf(now), Timestamp.valueOf(now));
+                }
+                return null;
+            }
+            Integer count = jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM agent_prompts WHERE prompt_key = ?", Integer.class,
+                    seed.key());
+            if (count != null && count > 0) {
+                return null;
+            }
+            jdbc.update("""
+                    INSERT INTO agent_prompts (prompt_id, prompt_key, title, content, status,
+                                               version, description, created_by, published_at,
+                                               created_at, updated_at)
+                    VALUES (?, ?, ?, ?, 'active', 1, ?, 'system', ?, ?, ?)
+                    """, Ids.next("prm"), seed.key(), seed.title(), seed.content(),
+                    seed.description(), Timestamp.valueOf(now), Timestamp.valueOf(now),
+                    Timestamp.valueOf(now));
+            return null;
+        });
+    }
+
     public PageResponse<AgentPrompt> listLatest(PageRequest page) {
         Integer total = jdbc.queryForObject("""
                 SELECT COUNT(*) FROM agent_prompts p

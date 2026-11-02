@@ -45,6 +45,9 @@ class AgentPolicyIT {
             .build();
     private static final HttpServer STUB = startStub();
     private static final ObjectMapper MAPPER = tools.jackson.databind.json.JsonMapper.builder().build();
+    private static final List<String> requestModels = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private static final List<String> requestSystemModels =
+            new java.util.concurrent.CopyOnWriteArrayList<>();
 
     @DynamicPropertySource
     static void agentProperties(DynamicPropertyRegistry registry) {
@@ -57,6 +60,9 @@ class AgentPolicyIT {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private com.xzxg.shop.config.ConfigService configService;
 
     @Test
     void policyWhitelistsAndCancellation() throws Exception {
@@ -176,6 +182,83 @@ class AgentPolicyIT {
         assertThat(status).isEqualTo("canceled");
     }
 
+    @Test
+    void memoryRetrievalResolvesPreviousProductReference() throws Exception {
+        String token = registerUser();
+        String sessionId = createSession(token);
+        HttpResponse<String> seed = call("POST", streamPath(sessionId), token,
+                "{\"client_message_id\":\"memory-seed\",\"content\":\"MEMORY_SEED 推荐拍照手机 p_001\"}");
+        assertThat(seed.statusCode()).isEqualTo(200);
+        assertThat(seed.body()).contains("\"type\":\"product_refs\"");
+        assertThat(cartQuantity(token, "p_001")).isZero();
+
+        HttpResponse<String> add = call("POST", streamPath(sessionId), token,
+                "{\"client_message_id\":\"memory-add\","
+                        + "\"content\":\"MEMORY_ADD 把刚才那个加入购物车\"}");
+        assertThat(add.statusCode()).isEqualTo(200);
+        assertThat(add.body()).contains("\"type\":\"cart_state\"");
+        assertThat(cartQuantity(token, "p_001")).isEqualTo(1);
+    }
+
+    @Test
+    void publishedRoutePromptAndRoleModelTakeEffect() throws Exception {
+        String adminToken = login("admin", "admin123456");
+        HttpResponse<String> draft = call("PATCH", "/api/v1/admin/prompts/agent.prompt.route",
+                adminToken, "{\"title\":\"route\",\"content\":\"CUSTOM_ROUTE_PROMPT "
+                        + "你是电商前置意图路由器，只输出 JSON。\",\"description\":\"test\"}");
+        assertThat(draft.statusCode()).isEqualTo(200);
+        assertThat(call("POST", "/api/v1/admin/prompts/agent.prompt.route/publish",
+                adminToken, null).statusCode()).isEqualTo(200);
+        configService.update("ai.model.planner_route", "custom-route-model",
+                "string", "test override", false);
+        requestModels.clear();
+
+        String token = registerUser();
+        String sessionId = createSession(token);
+        HttpResponse<String> stream = call("POST", streamPath(sessionId), token,
+                "{\"client_message_id\":\"custom-route\","
+                        + "\"content\":\"CUSTOM_ROUTE_TEST 推荐拍照手机\"}");
+        assertThat(stream.statusCode()).isEqualTo(200);
+        assertThat(stream.body()).contains("用户想买手机，关注拍照和预算。");
+        assertThat(stream.body()).contains("帮我对比这几款");
+        assertThat(requestModels).contains("custom-route-model");
+        assertThat(requestSystemModels).contains("route|custom-route-model");
+        assertThat(requestSystemModels).contains("non_guide_intent|stub-model");
+        assertThat(requestSystemModels).contains("need_summary|stub-model");
+        assertThat(requestSystemModels).contains("react|stub-model");
+
+        String runId = firstRunId(stream.body());
+        JsonNode trace = json(call("GET", "/api/v1/agent/runs/" + runId + "/trace",
+                token, null));
+        JsonNode planner = null;
+        for (JsonNode item : trace.get("items")) {
+            if ("planner".equals(item.path("stage").asString())) {
+                planner = item;
+            }
+        }
+        assertThat(planner).isNotNull();
+        JsonNode metadata = objectMapper.readTree(
+                planner.path("metadata_json").asString());
+        assertThat(metadata.path("route").asString()).isEqualTo("non_guide");
+
+        JsonNode detail = json(call("GET", "/api/v1/agent/sessions/" + sessionId, token, null));
+        assertThat(detail.path("session").path("summary").asString())
+                .isEqualTo("用户想买拍照手机");
+    }
+
+    private String login(String username, String password) throws Exception {
+        HttpResponse<String> response = call("POST", "/api/v1/auth/login", null,
+                "{\"username\":\"" + username + "\",\"password\":\"" + password + "\"}");
+        assertThat(response.statusCode()).isEqualTo(200);
+        return json(response).get("token").asText();
+    }
+
+    private static String firstRunId(String body) {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("\"run_id\":\"(run_[0-9]+)\"").matcher(body);
+        return matcher.find() ? matcher.group(1) : "";
+    }
+
     private String registerUser() throws Exception {
         String username = "policy_user_" + System.currentTimeMillis();
         HttpResponse<String> response = call("POST", "/api/v1/auth/register", null,
@@ -250,13 +333,63 @@ class AgentPolicyIT {
 
     private static void handleChat(HttpExchange exchange) throws IOException {
         String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+        String system = systemPrompt(body);
+        recordModel(body, system);
         String content;
         boolean finalAnswer = false;
-        if (body.contains("POLICY_CANCEL_MIDSTREAM")) {
-            sendPartialStream(exchange);
+        boolean stream = body.contains("\"stream\":true");
+
+        if (system.contains("前置意图路由器")) {
+            boolean nonGuide = body.contains("POLICY_GUESS_ADD") || body.contains("POLICY_ALLOW_ADD")
+                    || body.contains("MEMORY_ADD")
+                    || (system.contains("CUSTOM_ROUTE_PROMPT")
+                    && body.contains("CUSTOM_ROUTE_TEST"));
+            content = "{\"reasoning\":\"stub route\",\"route\":\""
+                    + (nonGuide ? "non_guide" : "guide") + "\"}";
+            sendJson(exchange, content);
             return;
         }
-        if (body.contains("POLICY_CANCEL")) {
+        if (system.contains("导购意图细分类器")) {
+            sendJson(exchange, "{\"reasoning\":\"stub\",\"is_guide\":true,"
+                    + "\"intent\":\"category_shop_no_brand\",\"level\":\"P4\","
+                    + "\"secondary_level\":\"P4B\"}");
+            return;
+        }
+        if (system.contains("非导购服务意图分类器")) {
+            sendJson(exchange, "{\"reasoning\":\"stub\",\"intent\":\"cart_service\"}");
+            return;
+        }
+        if (system.contains("需求理解摘要器")) {
+            sendJson(exchange, "用户想买手机，关注拍照和预算。");
+            return;
+        }
+        if (system.contains("短期会话记忆检索器")) {
+            if (body.contains("刚才") || body.contains("这个")) {
+                sendJson(exchange, "{\"has_relevant_memory\":true,"
+                        + "\"memory_summary\":\"上一轮推荐了 p_001\","
+                        + "\"referenced_product_ids\":[\"p_001\"],\"used_record_ids\":[]}");
+            } else {
+                sendJson(exchange, "{\"has_relevant_memory\":false}");
+            }
+            return;
+        }
+        if (system.contains("追问生成器")) {
+            sendJson(exchange, "[\"帮我对比这几款\",\"有没有更便宜的\"]");
+            return;
+        }
+        if (system.contains("会话摘要器")) {
+            sendJson(exchange, "{\"summary\":\"用户想买拍照手机\"}");
+            return;
+        }
+
+        if (body.contains("MEMORY_ADD")) {
+            finalAnswer = body.contains("observation: ");
+            content = finalAnswer ? finalText("已加入购物车")
+                    : toolCall("add_cart_item", Map.of("product_id", "p_001", "quantity", 1));
+        } else if (body.contains("POLICY_CANCEL_MIDSTREAM")) {
+            sendPartialStream(exchange);
+            return;
+        } else if (body.contains("POLICY_CANCEL")) {
             sleepQuietly(8000);
             content = "超时未取消";
             finalAnswer = true;
@@ -281,15 +414,68 @@ class AgentPolicyIT {
             } else {
                 content = toolCall("checkout", Map.of());
             }
+        } else if (body.contains("MEMORY_SEED")) {
+            content = "<item>p_001</item>推荐 p_001 拍照手机";
+            finalAnswer = true;
         } else {
             content = "好的";
             finalAnswer = true;
         }
-        if (body.contains("\"stream\":true")) {
+        if (stream) {
             sendStream(exchange, finalAnswer ? "<final>" + content + "</final>" : content);
         } else {
             sendJson(exchange, content);
         }
+    }
+
+    private static void recordModel(String body, String system) {
+        try {
+            String model = MAPPER.readTree(body).path("model").asString("");
+            requestModels.add(model);
+            requestSystemModels.add(tagOf(system) + "|" + model);
+        } catch (RuntimeException ignored) {
+            // no model field
+        }
+    }
+
+    private static String tagOf(String system) {
+        if (system.contains("前置意图路由器")) {
+            return "route";
+        }
+        if (system.contains("导购意图细分类器")) {
+            return "guide_intent";
+        }
+        if (system.contains("非导购服务意图分类器")) {
+            return "non_guide_intent";
+        }
+        if (system.contains("需求理解摘要器")) {
+            return "need_summary";
+        }
+        if (system.contains("短期会话记忆检索器")) {
+            return "memory_retrieval";
+        }
+        if (system.contains("会话摘要器")) {
+            return "memory_summary";
+        }
+        if (system.contains("追问生成器")) {
+            return "followups";
+        }
+        return "react";
+    }
+
+    private static String systemPrompt(String body) {
+        try {
+            JsonNode root = MAPPER.readTree(body);
+            JsonNode messages = root.path("messages");
+            for (JsonNode message : messages) {
+                if ("system".equals(message.path("role").asString())) {
+                    return message.path("content").asString("");
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // fall through
+        }
+        return "";
     }
 
     private static void sendPartialStream(HttpExchange exchange) throws IOException {

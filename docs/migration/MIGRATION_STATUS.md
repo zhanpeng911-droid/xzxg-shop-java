@@ -29,6 +29,14 @@
 | Nacos Go 格式（`configs` 数组）/legacy Map 读取与发布 | `NacosConfigClientTest` |
 | Nacos 新增敏感键默认脱敏 | `ConfigServiceTest.newRemoteSecretKeyIsMasked` |
 | 图片 bootstrap SQL 列名限定 | `VectorBootstrapIT` |
+| Go 全量默认 Prompt / 18 个意图 Prompt | `PromptCatalogTest`（32 个 key） |
+| 旧简化 Prompt 升级、用户自定义保留 | `PromptUpgradeIT` |
+| Prompt DB 优先级高于资源默认值 | `PromptUpgradeIT.databaseActivePromptTakesPriorityOverResourceDefault` |
+| Prompt 发布后运行时生效 | `AgentPolicyIT.publishedRoutePromptAndRoleModelTakeEffect` |
+| 一级路由 + guide/non_guide 细分意图 + 模型角色选择 | `AgentPolicyIT`（stub 校验 route/intent/model） |
+| need_summary 需求摘要 | `AgentPolicyIT`（stub 摘要进入 thinking） |
+| memory_retrieval 多轮指代 | `AgentPolicyIT.memoryRetrievalResolvesPreviousProductReference` |
+| 滚动会话摘要 | `AgentPolicyIT`（stub 摘要写回 session） |
 | 向导建议、测评接口/看板、配置读写、TTS 未配置 501 | `P6FlowIT` |
 | 商品导入 294 商品/973 SKU/1121 文档/1962 chunk | 导入命令实测 |
 | 空库 Flyway V1、最终 schema 副本显式 baseline | 手动实测 |
@@ -48,8 +56,8 @@ mvnw verify -DskipITs=false
 最近一次结果：
 
 ```text
-Tests run: 43, Failures: 0, Errors: 0, Skipped: 0        # surefire
-Tests run: 12, Failures: 0, Errors: 0, Skipped: 1        # failsafe（Takeover 未提供环境）
+Tests run: 44, Failures: 0, Errors: 0, Skipped: 0        # surefire
+Tests run: 16, Failures: 0, Errors: 0, Skipped: 1        # failsafe（Takeover 未提供环境）
 BUILD SUCCESS
 ```
 
@@ -59,7 +67,7 @@ BUILD SUCCESS
 |---|---|---|
 | Nacos 配置持久化/动态刷新 | `NacosConfigClient`、`NacosRefreshJob`、`ConfigService` 驱动 CORS/限流/体积/代理/vector 开关 | 未连接真实 Nacos；刷新周期与 namespace 未实测 |
 | Milvus 集合创建/写入/加载/bootstrap | `MilvusClient.ensureCollection/upsert/load`、`VectorBootstrapService` 文本+图片 | 只做了 REST stub 单测；未连接真实 Milvus |
-| 真实模型 Agent | OpenAI 兼容 `stream=true`、ReAct、角色模型、Prompt DB | 无真实 Key；stub 只验证协议/策略/取消 |
+| 真实模型 Agent | 完整 Go Prompt/规划/记忆链路 + `stream=true` 增量 SSE、ReAct、角色模型 | 无真实 Key；stub 验证协议/策略/取消/角色/记忆 |
 | 语音 TTS/ASR | 讯飞/豆包签名、WSS/HTTP、WebSocket 代理 | 无密钥，未实测 |
 | MinIO 上传/下载 | `ObjectStorage`、`/api/v1/files` | 本机 MinIO 未启动，未做 bucket 往返 |
 | 测评报告详情 | 看板扫描 + 报告文件读取 | 无真实报告文件；Node 脚本未对 Java 运行 |
@@ -70,10 +78,6 @@ BUILD SUCCESS
 
 | 能力 | 说明 |
 |---|---|
-| Go 全量默认 Prompt / 意图 Prompt 逐字迁移 | 只有 7 个简化默认 Prompt；`agent.prompt.intent.*` 未迁移 |
-| 一级模型规划（route/P1–P6 模型判定） | 当前为关键词意图分类，未调用模型规划 |
-| `need_summary` 模型流程 | 未实现 |
-| `memory_retrieval` 模型流程 | 当前只取最近 5 条对话，未做模型抽取 |
 | 真实旧库“缺列”升级验证 | 仅验证最终 schema 副本 baseline |
 | 生产部署、真实数据切换 | 明确未执行 |
 | 原系统 mock 支付/优惠抵扣/退款售后扩展 | 保持原边界，不新增 |
@@ -89,6 +93,9 @@ BUILD SUCCESS
 - 真实增量流：`stream=true` 解析 SSE delta；`<final>` 标签跨分块状态机。
 - Nacos：兼容 Go 的 `{"configs":[...]}`、legacy Map、domain 拆分 data id；新增敏感键默认脱敏。
 - Milvus：建集合/写入/加载/bootstrap；图片 SQL 使用 `p.` 限定列名。
+- Prompt：14 个 Go 常量 + 18 个意图 Prompt 自动提取并入库；旧简化默认值升级、用户自定义保留；DB active 优先。
+- 规划：一级 route → guide/non_guide 细分 → 角色模型选择，stub 校验调用顺序与模型。
+- 记忆：`memory_retrieval` 多轮指代、参考商品白名单、滚动 `session_summary`、`need_summary` thinking。
 - Failsafe 接入：`-DskipITs=false` 一条命令跑全部集成测试。
 - 并发幂等测试、误操作防护测试、取消/断连测试、跨分块解析测试。
 

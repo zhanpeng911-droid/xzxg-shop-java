@@ -102,7 +102,7 @@ documents and chunks. It never runs on normal API startup.
 
 ## Known gaps
 
-See `../docs/migration/KNOWN_DIFFERENCES.md`. The important ones: MinIO/Milvus,
-Nacos, and voice/model providers are implemented but not live-tested; the full
-Go prompt/planner/memory model chain is not implemented; Web/Android and Node
-eval integration has not been run.
+See `../docs/migration/KNOWN_DIFFERENCES.md`. The important ones: the full Go
+prompt/planner/memory chain is implemented and stub-verified, but real model
+quality is not; MinIO/Milvus/Nacos and voice providers are implemented but not
+live-tested; Web/Android and Node eval integration has not been run.

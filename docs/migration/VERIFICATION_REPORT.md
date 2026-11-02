@@ -21,8 +21,8 @@ mvnw verify -DskipITs=false
 ## 2. 最近一次结果
 
 ```text
-Surefire:   Tests run: 43, Failures: 0, Errors: 0, Skipped: 0
-Failsafe:   Tests run: 12, Failures: 0, Errors: 0, Skipped: 1
+Surefire:   Tests run: 44, Failures: 0, Errors: 0, Skipped: 0
+Failsafe:   Tests run: 16, Failures: 0, Errors: 0, Skipped: 1
 BUILD SUCCESS
 ```
 
@@ -37,8 +37,9 @@ BUILD SUCCESS
 - 工具/skill 意图策略、常见查询分类
 - Nacos 配置映射、敏感键脱敏、Go/legacy 两种数据格式
 - Milvus REST 建集合/写入/加载/查询载荷
+- Go 全量 Prompt/意图 Prompt 加载（32 个 key）
 
-### 集成测试（12，1 跳过）
+### 集成测试（16，1 跳过）
 
 | 测试 | 验证内容 |
 |---|---|
@@ -47,7 +48,8 @@ BUILD SUCCESS
 | P4FlowIT | 入库/去重、关键词召回、图片搜索降级 |
 | P5FlowIT | SSE 帧序、重复消息、历史 segments、trace、置顶/摘要 |
 | P6FlowIT | 向导建议、测评/看板、配置读写、TTS 501 |
-| AgentPolicyIT | 工具白名单、商品 ID 白名单、取消、流中途停顿时取消、断连停止、增量流、跨分块 `<final>` |
+| AgentPolicyIT | 工具白名单、商品 ID 白名单、取消、流中途停顿时取消、断连停止、增量流、跨分块 `<final>`、Prompt 发布生效、角色模型、need_summary、memory_retrieval、滚动摘要 |
+| PromptUpgradeIT | 旧简化 Prompt 升级、用户自定义保留、DB 优先级 |
 | IdempotencyIT | 8 并发同 client_message_id 仅 1 消息/1 run；8 并发加购数量=8 |
 | VectorBootstrapIT | 图片 bootstrap SQL 列名限定，返回种子商品 |
 | TakeoverBaselineIT | 未设置环境时跳过 |

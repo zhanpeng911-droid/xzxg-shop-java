@@ -45,13 +45,15 @@ public class AgentController {
 
     private final AgentRepository repository;
     private final AgentRuntime runtime;
+    private final MemoryService memory;
     private final ObjectMapper objectMapper;
     private final long heartbeatMs;
 
-    public AgentController(AgentRepository repository, AgentRuntime runtime,
+    public AgentController(AgentRepository repository, AgentRuntime runtime, MemoryService memory,
                            ObjectMapper objectMapper, ShopProperties properties) {
         this.repository = repository;
         this.runtime = runtime;
+        this.memory = memory;
         this.objectMapper = objectMapper;
         this.heartbeatMs = Math.max(200, properties.getAgent().getSseHeartbeatMs());
     }
@@ -251,7 +253,17 @@ public class AgentController {
                     () -> repository.isRunCanceled(runResult.run().runId()) || clientGone.get());
         } catch (IOException ex) {
             repository.updateRunStatus(user.accountId(), runResult.run().runId(), "canceled");
-            throw ex;
+            return;
+        } catch (RuntimeException ex) {
+            repository.updateRunStatus(user.accountId(), runResult.run().runId(), "failed");
+            try {
+                emitter.emit(SSEEvent.error(runResult.run().runId(), "internal_error",
+                        "导购服务暂时不可用"));
+                emitter.emit(SSEEvent.of("message_end", runResult.run().runId()));
+            } catch (IOException ignored) {
+                // client already gone
+            }
+            return;
         } finally {
             heartbeat.shutdownNow();
         }
@@ -262,7 +274,26 @@ public class AgentController {
             repository.updateRunStatus(user.accountId(), runResult.run().runId(), "canceled");
         } else if (!repository.isRunCanceled(runResult.run().runId())) {
             repository.updateRunStatus(user.accountId(), runResult.run().runId(), "completed");
+            if (!skipSessionSummary(blocks)) {
+                memory.updateSessionSummary(runResult.run(), created.message(),
+                        content.toString().trim());
+            }
         }
+    }
+
+    private static boolean skipSessionSummary(List<AgentBlock> blocks) {
+        for (AgentBlock block : blocks) {
+            if ("cart_state".equals(block.type()) || "order_summary".equals(block.type())) {
+                return true;
+            }
+            if ("warning".equals(block.type())
+                    && ("unsafe_request".equals(block.code())
+                    || "risk_account".equals(block.code())
+                    || "vlm_not_configured".equals(block.code()))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @PostMapping("/api/v1/agent/runs/{runAction}")

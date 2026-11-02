@@ -1,6 +1,6 @@
 package com.xzxg.shop.agent;
 
-import java.util.List;
+import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
@@ -8,54 +8,45 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Component;
 
 /**
- * Seeds the database prompt rows that the Go backend creates at startup. Content is
- * the runtime's default protocol text; richer per-intent defaults can be imported
- * later without changing the storage contract.
+ * Seeds every Go default prompt and upgrades rows that still contain one of the
+ * earlier simplified defaults. User-customized rows are preserved.
  */
 @Component
 public class PromptSeeder implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(PromptSeeder.class);
 
-    public static final String TOOL_PROTOCOL = "agent.prompt.tool_call_protocol";
     public static final String MAIN_TEMPLATE = "agent.prompt.main_template";
+    public static final String TOOL_PROTOCOL = "agent.prompt.tool_call_protocol";
     public static final String FOLLOWUPS = "agent.prompt.followups";
+    public static final String ROUTE = "agent.prompt.route";
+    public static final String GUIDE_INTENT = "agent.prompt.guide_intent";
+    public static final String NON_GUIDE_INTENT = "agent.prompt.non_guide_intent";
+    public static final String FINAL_OUTPUT_RULES = "agent.prompt.final_output_rules";
+    public static final String NON_GUIDE_FINAL_OUTPUT_RULES =
+            "agent.prompt.non_guide_final_output_rules";
+    public static final String INTENT_TOOL_POLICY = "agent.prompt.intent_tool_policy";
+    public static final String MEMORY_RETRIEVAL = "agent.prompt.memory_retrieval";
+    public static final String SESSION_SUMMARY = "agent.prompt.session_summary";
+    public static final String GUIDE_SUGGESTIONS = "agent.prompt.guide_suggestions";
 
     private final PromptRepository prompts;
+    private final PromptCatalog catalog;
 
-    public PromptSeeder(PromptRepository prompts) {
+    public PromptSeeder(PromptRepository prompts, PromptCatalog catalog) {
         this.prompts = prompts;
+        this.catalog = catalog;
     }
 
     @Override
     public void run(ApplicationArguments args) {
         try {
-            prompts.seedIfMissing(List.of(
-                    new PromptRepository.PromptSeed("agent.prompt.route", "一级路由 Prompt",
-                            "判断用户请求属于 guide（商品导购）还是 non_guide（购物车、订单、优惠、售后等确定性操作）。",
-                            "guide/non_guide 路由"),
-                    new PromptRepository.PromptSeed("agent.prompt.guide_intent", "导购细分 Prompt",
-                            "在 guide 路由内识别商品推荐、对比、知识问答等细分意图。",
-                            "导购意图识别"),
-                    new PromptRepository.PromptSeed("agent.prompt.non_guide_intent", "非导购细分 Prompt",
-                            "识别购物车、订单、支付、取消、收货、优惠券、评价等确定性意图。",
-                            "非导购意图识别"),
-                    new PromptRepository.PromptSeed(MAIN_TEMPLATE, "主 Agent 模板 Prompt",
-                            "你是 xzxg-shop 的导购 Agent，回答要简洁、可执行，不编造商品或订单信息。",
-                            "主 Agent 系统提示词"),
-                    new PromptRepository.PromptSeed(TOOL_PROTOCOL, "工具调用协议 Prompt",
-                            "工具调用只输出 JSON：{\"type\":\"tool_call\",\"tool\":\"工具名\",\"arguments\":{}}；"
-                                    + "技能调用只输出 JSON：{\"type\":\"skill_call\",\"skill\":\"技能名\"}；"
-                                    + "最终回答只输出 <final>回答</final>，标签外不要输出正文。",
-                            "ReAct 调用协议"),
-                    new PromptRepository.PromptSeed("agent.prompt.final_output_rules",
-                            "最终回答规范 Prompt",
-                            "用中文回答，先给结论再给理由；涉及价格、库存、订单状态时必须来自工具结果。",
-                            "最终回答规范"),
-                    new PromptRepository.PromptSeed(FOLLOWUPS, "追问生成 Prompt",
-                            "生成三个简短、与当前问题相关的追问。",
-                            "追问生成")
-            ));
+            for (Map.Entry<String, PromptRepository.PromptSeed> entry
+                    : catalog.allSeeds().entrySet()) {
+                prompts.seedOrUpgrade(entry.getValue(),
+                        catalog.legacyDefaults(entry.getKey()));
+            }
+            log.info("agent prompts seeded/upgraded: {}", catalog.keys().size());
         } catch (RuntimeException ex) {
             // Mirrors the Go startup behaviour: prompt seeding is best-effort.
             log.warn("seed agent prompts skipped: {}", ex.getMessage());

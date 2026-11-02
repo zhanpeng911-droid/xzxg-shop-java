@@ -114,6 +114,12 @@ public class ConfigService {
         rateLimitFilter.ifAvailable(com.xzxg.shop.common.web.RateLimitFilter::refresh);
     }
 
+    public String stringValue(String key, String fallback) {
+        AppConfig item = configs.get(key);
+        return item == null || item.configValue() == null || item.configValue().isBlank()
+                ? fallback : item.configValue();
+    }
+
     private String value(String key, String fallback) {
         AppConfig item = configs.get(key);
         return item == null || item.configValue() == null || item.configValue().isBlank()

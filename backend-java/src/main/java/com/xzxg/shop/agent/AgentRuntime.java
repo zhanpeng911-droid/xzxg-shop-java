@@ -41,9 +41,6 @@ public class AgentRuntime {
         void emit(SSEEvent event) throws IOException;
     }
 
-    public record Plan(String route, String intent) {
-    }
-
     private final AgentRepository repository;
     private final ToolRegistry tools;
     private final SkillRegistry skills;
@@ -51,12 +48,18 @@ public class AgentRuntime {
     private final RiskService risk;
     private final AccountRepository accounts;
     private final KnowledgeService knowledge;
-    private final PromptRepository prompts;
+    private final PromptService prompts;
+    private final PlannerService planner;
+    private final ToolPolicyProvider policyProvider;
+    private final MemoryService memory;
+    private final FollowupService followups;
     private final ObjectMapper objectMapper;
 
     public AgentRuntime(AgentRepository repository, ToolRegistry tools, SkillRegistry skills,
                         LlmClient llm, RiskService risk, AccountRepository accounts,
-                        KnowledgeService knowledge, PromptRepository prompts,
+                        KnowledgeService knowledge, PromptService prompts,
+                        PlannerService planner, ToolPolicyProvider policyProvider,
+                        MemoryService memory, FollowupService followups,
                         ObjectMapper objectMapper) {
         this.repository = repository;
         this.tools = tools;
@@ -66,6 +69,10 @@ public class AgentRuntime {
         this.accounts = accounts;
         this.knowledge = knowledge;
         this.prompts = prompts;
+        this.planner = planner;
+        this.policyProvider = policyProvider;
+        this.memory = memory;
+        this.followups = followups;
         this.objectMapper = objectMapper;
     }
 
@@ -108,24 +115,41 @@ public class AgentRuntime {
 
         emitStatus(run, "intent", "正在理解你的需求", emit);
         String query = message.content() == null ? "" : message.content().trim();
-        Plan plan = plan(query);
-        ToolPolicy.Policy policy = ToolPolicy.forPlan(plan.route(), plan.intent());
+        MemoryService.Result memoryResult = memory.retrieve(run, query);
+        String effectiveQuery = memory.formatQuery(query, memoryResult);
+        PlannerService.Plan plan = planner.plan(effectiveQuery);
+        ToolPolicy.Policy policy = policyProvider.policy(plan.route(), plan.intent());
         repository.recordTrace(run.runId(), run.traceId(), run.accountId(), "planner", "selected",
-                "", "ok", 0, "", "{\"route\":\"" + plan.route() + "\",\"intent\":\""
-                        + plan.intent() + "\"}");
+                plan.answerModel(), "ok", 0, "",
+                "{\"route\":\"" + plan.route() + "\",\"intent\":\"" + plan.intent()
+                        + "\",\"level\":\"" + plan.level() + "\",\"secondary_level\":\""
+                        + plan.secondaryLevel() + "\"}");
+        if (memoryResult.hasRelevantMemory()) {
+            repository.recordTrace(run.runId(), run.traceId(), run.accountId(), "memory",
+                    "applied", "", "ok", 0, "",
+                    "{\"referenced_product_ids\":" + objectMapper.writeValueAsString(
+                            memoryResult.referencedProductIds()) + "}");
+        }
+        String needSummary = memory.needSummary(run, effectiveQuery, plan);
+        if (!needSummary.isBlank()) {
+            emit.emit(thinking(run.runId(), new ThoughtStep("intent", "分析用户需求", "done",
+                    needSummary, null, null, 1)));
+        }
 
         Set<String> allowedProductIds = new HashSet<>();
         Matcher explicitProducts = PRODUCT_ID.matcher(query);
         while (explicitProducts.find()) {
             allowedProductIds.add(explicitProducts.group(1));
         }
+        allowedProductIds.addAll(memoryResult.referencedProductIds());
         try {
             if ("non_guide".equals(plan.route()) && !llm.enabled()) {
-                deterministic(run, account, query, plan, policy, allowedProductIds, canceled, emit);
+                deterministic(run, account, query, plan, policy, allowedProductIds, memoryResult,
+                        canceled, emit);
             } else if (llm.enabled()) {
-                react(run, account, query, plan, policy, allowedProductIds, canceled, emit);
+                react(run, account, effectiveQuery, plan, policy, allowedProductIds, canceled, emit);
             } else {
-                localGuide(run, query, policy, allowedProductIds, emit);
+                localGuide(run, effectiveQuery, policy, allowedProductIds, emit);
             }
         } catch (CancellationException ex) {
             emitCanceled(run, emit);
@@ -136,7 +160,8 @@ public class AgentRuntime {
             return;
         }
         emit.emit(new SSEEvent("followups", run.runId(), null, null, null, null, null, null,
-                null, null, null, followups(plan), null, null));
+                null, null, null, followups.generate(query, plan.route(), plan.intent(),
+                        followupFallback(plan)), null, null));
         emit.emit(SSEEvent.of("message_end", run.runId()));
     }
 
@@ -172,8 +197,9 @@ public class AgentRuntime {
         }
     }
 
-    private void deterministic(AgentRun run, Account account, String query, Plan plan,
-                               ToolPolicy.Policy policy, Set<String> allowedProductIds,
+    private void deterministic(AgentRun run, Account account, String query,
+                               PlannerService.Plan plan, ToolPolicy.Policy policy,
+                               Set<String> allowedProductIds, MemoryService.Result memoryResult,
                                BooleanSupplier canceled, Emitter emit) throws IOException {
         String lower = query.toLowerCase(Locale.ROOT);
         if ("navigation_service".equals(plan.intent())) {
@@ -190,6 +216,12 @@ public class AgentRuntime {
             if (matcher.find()) {
                 tool = "add_cart_item";
                 args = Map.of("product_id", matcher.group(1), "quantity", 1);
+            } else if (memoryResult.hasRelevantMemory()
+                    && !memoryResult.referencedProductIds().isEmpty()
+                    && looksLikeMemoryReference(query)) {
+                tool = "add_cart_item";
+                args = Map.of("product_id", memoryResult.referencedProductIds().get(0),
+                        "quantity", 1);
             } else {
                 tool = "search_products";
                 args = Map.of("query", query, "limit", 5);
@@ -255,8 +287,8 @@ public class AgentRuntime {
         emitText(run, observation.message(), emit);
     }
 
-    private void react(AgentRun run, Account account, String query, Plan plan,
-                       ToolPolicy.Policy policy, Set<String> allowedProductIds,
+    private void react(AgentRun run, Account account, String query,
+                       PlannerService.Plan plan, ToolPolicy.Policy policy, Set<String> allowedProductIds,
                        BooleanSupplier canceled, Emitter emit) throws IOException {
         List<LlmClient.Message> messages = new ArrayList<>();
         messages.add(new LlmClient.Message("system", systemPrompt(plan, policy)));
@@ -374,6 +406,11 @@ public class AgentRuntime {
         StringBuilder finalText = new StringBuilder();
         boolean[] inFinal = {false};
         StreamTextFilter filter = new StreamTextFilter(List.copyOf(allowedProductIds), id -> {
+            try {
+                emit.emit(SSEEvent.block(run.runId(), Blocks.productRefs(List.of(id))));
+            } catch (IOException ex) {
+                throw new java.io.UncheckedIOException(ex);
+            }
         },
                 block -> {
                     try {
@@ -571,14 +608,22 @@ public class AgentRuntime {
         return raw.trim();
     }
 
-    private String systemPrompt(Plan plan, ToolPolicy.Policy policy) {
+    private String systemPrompt(PlannerService.Plan plan, ToolPolicy.Policy policy) {
         StringBuilder prompt = new StringBuilder();
-        prompts.active(PromptSeeder.MAIN_TEMPLATE)
-                .ifPresent(value -> prompt.append(value.content()).append('\n'));
-        prompts.active(PromptSeeder.TOOL_PROTOCOL)
-                .ifPresent(value -> prompt.append(value.content()).append('\n'));
+        appendPrompt(prompt, PromptSeeder.MAIN_TEMPLATE);
+        appendPrompt(prompt, PromptSeeder.TOOL_PROTOCOL);
+        appendPrompt(prompt, PromptSeeder.FINAL_OUTPUT_RULES);
+        if ("non_guide".equals(plan.route())) {
+            appendPrompt(prompt, PromptSeeder.NON_GUIDE_FINAL_OUTPUT_RULES);
+        }
+        String intentPrompt = prompts.intentPrompt(plan.intent());
+        if (!intentPrompt.isBlank()) {
+            prompt.append(intentPrompt).append('\n');
+        }
         prompt.append("当前 route=").append(plan.route())
-                .append("，intent=").append(plan.intent()).append("。\n");
+                .append("，intent=").append(plan.intent())
+                .append("，level=").append(plan.level())
+                .append("，secondary_level=").append(plan.secondaryLevel()).append("。\n");
         prompt.append("可用工具：").append(policy.tools()).append('\n');
         prompt.append("可用 skill：").append(policy.skills()).append('\n');
         prompt.append("禁用能力：").append(policy.disabled()).append('\n');
@@ -597,6 +642,13 @@ public class AgentRuntime {
         return prompt.toString();
     }
 
+    private void appendPrompt(StringBuilder builder, String key) {
+        String content = prompts.content(key);
+        if (content != null && !content.isBlank()) {
+            builder.append(content).append('\n');
+        }
+    }
+
     private static String navigationSkill(String lower) {
         if (lower.contains("订单")) {
             return "navigate_orders";
@@ -610,68 +662,82 @@ public class AgentRuntime {
         return "navigate_cart";
     }
 
-    public static Plan plan(String query) {
+    private static PlannerService.Plan heuristic(String route, String intent) {
+        return new PlannerService.Plan(route, intent, "", "", "", "");
+    }
+
+    public static PlannerService.Plan plan(String query) {
         String lower = query == null ? "" : query.toLowerCase(Locale.ROOT);
         if (lower.contains("你好") || lower.contains("谢谢") || lower.contains("在吗")
                 || lower.contains("再见")) {
-            return new Plan("non_guide", "chitchat");
+            return heuristic("non_guide", "chitchat");
         }
         if (lower.contains("打开") || lower.contains("进入") || lower.contains("入口")
                 || (lower.contains("去") && lower.contains("页"))) {
-            return new Plan("non_guide", "navigation_service");
+            return heuristic("non_guide", "navigation_service");
         }
         if (lower.contains("售后") || lower.contains("退款") || lower.contains("退货")
                 || lower.contains("换货") || lower.contains("保修") || lower.contains("发票")
                 || lower.contains("投诉")) {
-            return new Plan("non_guide", "after_sales_service");
+            return heuristic("non_guide", "after_sales_service");
         }
         if (lower.contains("评价") || lower.contains("评论") || lower.contains("差评")) {
-            return new Plan("non_guide", "review_service");
+            return heuristic("non_guide", "review_service");
         }
         if (lower.contains("优惠券") || lower.contains("券") || lower.contains("促销")
                 || lower.contains("活动")) {
-            return new Plan("non_guide", "coupon_service");
+            return heuristic("non_guide", "coupon_service");
         }
         if (lower.contains("订单") || lower.contains("支付") || lower.contains("付款")
                 || lower.contains("取消") || lower.contains("收货") || lower.contains("物流")) {
-            return new Plan("non_guide", "order_service");
+            return heuristic("non_guide", "order_service");
         }
         if (lower.contains("购物车") || lower.contains("加购") || lower.contains("结算")
                 || lower.contains("下单")) {
-            return new Plan("non_guide", "cart_service");
+            return heuristic("non_guide", "cart_service");
         }
         if (lower.contains("账号") || lower.contains("登录") || lower.contains("注册")
                 || lower.contains("地址") || lower.contains("会员")) {
-            return new Plan("non_guide", "account_service");
+            return heuristic("non_guide", "account_service");
         }
         if (lower.contains("对比") || lower.contains("比较") || lower.contains("选哪个")) {
-            return new Plan("guide", "compare_decide");
+            return heuristic("guide", "compare_decide");
         }
         if (lower.contains("搭配") || lower.contains("穿搭") || lower.contains("风格")) {
-            return new Plan("guide", "outfit_styling");
+            return heuristic("guide", "outfit_styling");
         }
         if (lower.contains("场景") || lower.contains("清单") || lower.contains("一套")
                 || lower.contains("全家")) {
-            return new Plan("guide", "scene_solution");
+            return heuristic("guide", "scene_solution");
         }
         if (lower.contains("预算") || lower.contains("以内") || lower.contains("不超过")
                 || lower.contains("排除") || lower.contains("不要")) {
-            return new Plan("guide", "category_shop_complex");
+            return heuristic("guide", "category_shop_complex");
         }
         if (lower.contains("品牌") || lower.contains("旗舰店")) {
-            return new Plan("guide", "category_shop_brand");
+            return heuristic("guide", "category_shop_brand");
         }
         if (lower.matches(".*(iphone|ipad|macbook|mate|pro|max|ultra|\\d{3,}).*")) {
-            return new Plan("guide", "product_deep");
+            return heuristic("guide", "product_deep");
         }
         if (lower.contains("好看") || lower.contains("ins") || lower.contains("ip")) {
-            return new Plan("guide", "open_explore");
+            return heuristic("guide", "open_explore");
         }
-        return new Plan("guide", "category_shop_no_brand");
+        return heuristic("guide", "category_shop_no_brand");
     }
 
-    private static List<String> followups(Plan plan) {
-        if (!"guide".equals(plan.route())) {
+    private static boolean looksLikeMemoryReference(String query) {
+        String value = query == null ? "" : query;
+        for (String keyword : List.of("刚才", "上面", "前面", "那个", "这个", "第二个",
+                "第一个", "第三个", "它", "继续")) {
+            if (value.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static List<String> followupFallback(PlannerService.Plan plan) {        if (!"guide".equals(plan.route())) {
             return List.of("查看我的订单", "看看购物车", "有什么优惠券");
         }
         return List.of("帮我对比这几款", "有没有更便宜的", "先加入购物车");
