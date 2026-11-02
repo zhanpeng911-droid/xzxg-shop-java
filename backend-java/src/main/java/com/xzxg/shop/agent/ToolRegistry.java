@@ -110,6 +110,7 @@ public class ToolRegistry {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("total", page.total());
         result.put("items", page.items());
+        result.put("relevance_status", page.items().isEmpty() ? "no_match" : "ok");
         return new Observation("search_products", true,
                 page.items().isEmpty() ? "没有找到匹配商品" : "找到 " + page.items().size() + " 个商品",
                 result, blocks);

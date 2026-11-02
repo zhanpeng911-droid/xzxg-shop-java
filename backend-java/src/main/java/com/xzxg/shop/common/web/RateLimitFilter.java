@@ -27,14 +27,21 @@ public class RateLimitFilter extends OncePerRequestFilter {
     private static final String HEALTH_PATH = "/api/v1/health";
     private static final String EVAL_PREFIX = "/api/v1/eval/";
 
-    private final boolean enabled;
-    private final FixedWindowRateLimiter limiter;
+    private final ShopProperties properties;
     private final ApiErrorWriter errorWriter;
+    private volatile boolean enabled;
+    private volatile FixedWindowRateLimiter limiter;
 
     public RateLimitFilter(ShopProperties properties, ApiErrorWriter errorWriter) {
+        this.properties = properties;
+        this.errorWriter = errorWriter;
+        refresh();
+    }
+
+    /** Rebuilds the limiter after a dynamic config change. */
+    public void refresh() {
         ShopProperties.RateLimit config = properties.getWeb().getRateLimit();
         this.enabled = config.isEnabled();
-        this.errorWriter = errorWriter;
         this.limiter = enabled
                 ? new FixedWindowRateLimiter(config.getLimit(), config.getWindowSeconds(),
                         config.getMaxEntries())

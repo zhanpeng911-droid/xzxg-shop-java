@@ -2,95 +2,90 @@
 
 - 更新时间：2026-11-02（Asia/Hong_Kong）
 - 源码：`D:\claudecode\shop`，`HEAD = cabd0a1b01abac05f666c522d238c6c1ce092815`
-- 当前阶段：P2–P6 主体实现完成；P7 未完成客户端联调，外部服务联调未完成
+- 交付定位：**Java 基础版 + 关键安全/流式修复**；不是全量迁移验收完成
+- 状态口径：
+  - **验证通过**：有可重复命令和断言结果
+  - **已实现未验证**：代码存在，未连接真实外部服务或未跑真实验收
+  - **未实现**：尚未落地
 
-## 1. 已完成并有实测结果
+## 1. 验证通过
 
-| 阶段 | 内容 | 状态 |
-|---|---|---|
-| P1 | Spring Boot 工程、Maven Wrapper、Flyway V1（23 表）、旧库 baseline | 完成 |
-| P2 | bcrypt/历史 SHA-256、token、账号资料、类目/商家/商品/SKU、商家与管理员商品操作 | 完成 |
-| P3 | 购物车、优惠预览、跨商家拆单、mock 支付、发货/收货、评价/回复、券、活动 | 完成 |
-| P4 | MinIO 适配、文件元数据、知识入库/分块/去重、关键词+向量检索、64 维图片直方图、图片搜索 | 完成（外部服务未联调） |
-| P5 | 会话 CRUD/搜索/置顶/摘要、POST SSE、重复消息协议、20 工具 + 6 skill、记忆、风控、trace、Prompt 管理 | 完成（LLM 未联调） |
-| P6 | 向导建议、TTS/实时 ASR 适配、测评接口/后台、商品导入命令 | 完成（供应商未联调） |
-
-### 实测命令与结果
-
-```text
-backend-java> mvnw clean verify
-Tests run: 32, Failures: 0, Errors: 0, Skipped: 0
-BUILD SUCCESS
-
-# 隔离 MySQL（xzxg_shop_all_it），同一库顺序执行 P2–P6
-mvnw -Dtest=P2FlowIT,P3FlowIT,P4FlowIT,P5FlowIT,P6FlowIT test
-Tests run: 5, Failures: 0, Errors: 0, Skipped: 0
-BUILD SUCCESS
-```
-
-覆盖的真实流程：
-
-- P2：历史 SHA-256 登录后升级 bcrypt；token 生成/注销；角色 401/403；
-  商品 camelCase 契约；商家商品创建/修改/删除；管理员账号列表与状态校验。
-- P3：加购 → 优惠预览（平台 30 + 商家 80）→ 跨商家拆单 → 支付 → 发货 →
-  收货 → 评价 → 商家回复 → 管理员隐藏；券领取与每人限领；空购物车结算 400。
-- P4：商家资料创建/同 Hash 去重；HTML 非结构化入库/重复标记；关键词召回；
-  图片搜索在向量关闭时返回 `no_match/image_vector_index_unavailable`；
-  64 维直方图（含透明像素）单测。
-- P5：SSE 帧序（message_start/status/block_delta/text_delta/followups/message_end）；
-  重复 client_message_id 返回三事件协议且同 run_id；购物车确定性路径；
-  风控拦截；历史 blocks/segments 持久化；trace；置顶/摘要/搜索/删除；
-  商家访问用户 Agent 被 403。
-- P6：向导建议规则；意图/rag/商品测评；管理员测评看板；配置列表/更新；
-  TTS 未配置时 501；导入命令。
-
-### 商品导入
-
-```text
-java -jar target/shop-backend-0.1.0-SNAPSHOT.jar \
-  --spring.main.web-application-type=none \
-  --shop.cli.import-products=true
-```
-
-实测导入 `quality/data/ecommerce_agent_dataset`：
-
-```text
-products=294, skus=973, knowledge_documents=1121, knowledge_chunks=1962, categories=83
-```
-
-### 数据库验证
-
-- 空库：Flyway V1 创建 23 张表 + `flyway_schema_history`；local profile demo seed 生效。
-- 旧库：复制 23 表+数据（无 Flyway 历史）→ 显式 baseline=1 → 应用启动；
-  商品/账号行数保持不变，`flyway_schema_history` 仅 1 条 baseline 记录。
-- 旧库“缺列”场景尚未用真实历史库副本验证。
-
-## 2. 未完成 / 未验证
-
-| 项 | 原因 |
+| 能力 | 证据 |
 |---|---|
-| MinIO 上传/下载联调 | 本机 MinIO 未启动；代码已实现，未做真实 bucket 往返 |
-| Milvus 向量索引 bootstrap/upsert | 只实现查询与状态；未实现集合创建/向量写入，未连接 Milvus |
-| 真实模型 Agent 路径 | 无 API Key；已测本地确定性兜底；LLM ReAct 未联调 |
-| LLM 流式 | 当前为完成后分块发送 SSE，不是 token 级实时流 |
-| 语音供应商 | 无讯飞/豆包密钥；签名、TTS、ASR 代理已实现但未实测 |
-| Nacos | 未实现；配置为进程内默认值，更新不驱动已创建 Bean |
-| Prompt 内容 | 仅种子化 7 个简化默认 Prompt，未逐字迁移 Go 常量 |
-| 前端/Android 联调 | 未运行 Web build、Android 构建或真实客户端 |
-| 测评报告详情 | 无报告文件；看板扫描逻辑已实现 |
-| 旧库缺列升级 | 未构造真实历史 schema 副本 |
+| 工程构建、Maven Wrapper、可执行 JAR | `mvnw clean verify` |
+| 请求 ID、CORS、限流、体积限制、错误对象、可信代理 | `InfrastructureHttpTest` 7 + 单元测试 |
+| 密码 bcrypt/历史 SHA-256、token、角色 401/403 | `P2FlowIT` |
+| 商品目录、商家商品 CRUD、管理员账号/商品状态 | `P2FlowIT` |
+| 购物车、优惠预览、跨商家拆单、mock 支付、发货/收货、评价、券 | `P3FlowIT` |
+| 知识入库/去重、关键词召回、图片搜索降级 | `P4FlowIT` |
+| SSE 帧序、重复消息三事件协议、历史 blocks/segments、trace、置顶/摘要 | `P5FlowIT` |
+| 工具/skill 意图白名单 | `ToolPolicyTest` 6 + `AgentPolicyIT` |
+| 商品 ID 白名单（猜测 ID 拒绝、显式/检索 ID 允许） | `AgentPolicyIT` |
+| 取消：数据库状态 + 模型 HTTP 请求中止 + 后续步骤停止 | `AgentPolicyIT` |
+| 真实增量流 + 跨分块 `<final>`/标签解析 | `AgentPolicyIT`（stub SSE） |
+| 并发消息/run 幂等、并发加购数量 | `IdempotencyIT` 2 |
+| 向导建议、测评接口/看板、配置读写、TTS 未配置 501 | `P6FlowIT` |
+| 商品导入 294 商品/973 SKU/1121 文档/1962 chunk | 导入命令实测 |
+| 空库 Flyway V1、最终 schema 副本显式 baseline | 手动实测 |
 
-## 3. 明确未做
+验收命令：
 
-- 没有修改前端业务代码，也没有运行 `npm run build`。
-- 没有启动 Android 客户端或执行真实设备联调。
-- 没有连接公网演示环境、生产数据库或真实支付/语音/模型服务。
-- 没有 commit/push（收尾步骤单独执行）。
+```bash
+# 单元 + 基础设施
+mvnw clean verify
 
-## 4. 下一步（如继续）
+# 单测 + 全部集成测试（需要隔离 MySQL）
+SHOP_IT_DB_URL='jdbc:mysql://127.0.0.1:3306/xzxg_shop_it?...' \
+SHOP_IT_DB_PASSWORD=... \
+mvnw verify -DskipITs=false
+```
 
-1. 启动 MinIO/Milvus，补齐文件往返与向量 bootstrap/upsert 验证。
-2. 配置模型/语音测试密钥，跑真实 Agent、TTS、ASR。
-3. 实现 Nacos 客户端并让动态配置驱动 CORS/限流/检索参数。
-4. 用真实历史库副本验证 `DB_TAKEOVER.md` 的补列路径。
-5. 运行 Web/Android 联调与 Node 测评脚本。
+最近一次结果：
+
+```text
+Tests run: 41, Failures: 0, Errors: 0, Skipped: 0        # surefire
+Tests run: 9,  Failures: 0, Errors: 0, Skipped: 1        # failsafe（Takeover 未提供环境）
+BUILD SUCCESS
+```
+
+## 2. 已实现未验证
+
+| 能力 | 实现 | 缺什么 |
+|---|---|---|
+| Nacos 配置持久化/动态刷新 | `NacosConfigClient`、`NacosRefreshJob`、`ConfigService` 驱动 CORS/限流/体积/代理/vector 开关 | 未连接真实 Nacos；刷新周期与 namespace 未实测 |
+| Milvus 集合创建/写入/加载/bootstrap | `MilvusClient.ensureCollection/upsert/load`、`VectorBootstrapService` 文本+图片 | 只做了 REST stub 单测；未连接真实 Milvus |
+| 真实模型 Agent | OpenAI 兼容 `stream=true`、ReAct、角色模型、Prompt DB | 无真实 Key；stub 只验证协议/策略/取消 |
+| 语音 TTS/ASR | 讯飞/豆包签名、WSS/HTTP、WebSocket 代理 | 无密钥，未实测 |
+| MinIO 上传/下载 | `ObjectStorage`、`/api/v1/files` | 本机 MinIO 未启动，未做 bucket 往返 |
+| Prompt 全量默认值 | 7 个简化默认 Prompt + DB 草稿/发布 | 未逐字迁移 Go 全部 Prompt/意图 Prompt |
+| 规划/记忆模型链路 | 关键词意图 + 可选模型 ReAct；最近 5 条对话 | 未迁移 need_summary/memory_retrieval/一级 route 模型规划 |
+| 测评报告详情 | 看板扫描 + 报告文件读取 | 无真实报告文件；Node 脚本未对 Java 运行 |
+
+## 3. 未实现
+
+| 能力 | 说明 |
+|---|---|
+| Web/Android 客户端联调 | 未构建、未运行真实客户端 |
+| Node `quality/evals` 对 Java API 的联调 | 未执行 |
+| 真实旧库“缺列”升级验证 | 仅验证最终 schema 副本 baseline |
+| 生产部署、真实数据切换 | 明确未执行 |
+| 原系统 mock 支付/优惠抵扣/退款售后扩展 | 保持原边界，不新增 |
+| 向量新建集合后的增量同步任务 | 只有启动 bootstrap，无持续同步 |
+
+## 4. 本轮新增修复
+
+- 工具/skill 意图白名单在执行层强制，不再只写 Prompt。
+- 商品 ID 白名单：模型猜测 ID 被拒绝；用户显式 ID 或本轮检索结果可用。
+- 取消：模型 HTTP 请求可中止，工具调用前检查，取消后不再启动后续步骤。
+- 真实增量流：`stream=true` 解析 SSE delta；`<final>` 标签跨分块状态机。
+- Failsafe 接入：`-DskipITs=false` 一条命令跑全部集成测试。
+- 并发幂等测试、误操作防护测试、取消测试、跨分块解析测试。
+- Nacos 客户端/动态配置、Milvus 建集合/写入/bootstrap。
+
+## 5. 下一步
+
+1. 启动 Nacos/MinIO/Milvus，跑真实持久化、文件往返、集合检索。
+2. 配模型/语音测试密钥，跑真实 Agent/TTS/ASR。
+3. 逐字迁移 Go 全部默认 Prompt、意图 Prompt、规划/记忆链路。
+4. 跑 Web/Android/Node 评估联调。
+5. 用真实历史库副本验证补列接管。

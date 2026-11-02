@@ -135,6 +135,15 @@ shop:
         volume-ratio: ${DOUBAO_TTS_VOLUME_RATIO:1.0}
         pitch-ratio: ${DOUBAO_TTS_PITCH_RATIO:1.0}
         max-runes: ${DOUBAO_TTS_MAX_RUNES:800}
+  nacos:
+    enabled: ${NACOS_ENABLED:false}
+    server-addr: ${NACOS_ADDR:http://127.0.0.1:8848}
+    namespace: ${NACOS_NAMESPACE:}
+    group: ${NACOS_GROUP:XZXG_SHOP}
+    data-id: ${NACOS_DATA_ID:xzxg-shop-app-config.json}
+    username: ${NACOS_USERNAME:}
+    password: ${NACOS_PASSWORD:}
+    refresh-ms: ${NACOS_REFRESH_MS:30000}
 
 logging:
   pattern:

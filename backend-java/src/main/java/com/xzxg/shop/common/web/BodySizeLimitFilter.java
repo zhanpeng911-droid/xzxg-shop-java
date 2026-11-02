@@ -26,17 +26,18 @@ public class BodySizeLimitFilter extends OncePerRequestFilter {
 
     private static final HttpStatus PAYLOAD_TOO_LARGE = HttpStatus.valueOf(413);
 
-    private final long maxRequestBodyBytes;
+    private final ShopProperties properties;
     private final ApiErrorWriter errorWriter;
 
     public BodySizeLimitFilter(ShopProperties properties, ApiErrorWriter errorWriter) {
-        this.maxRequestBodyBytes = properties.getWeb().getMaxRequestBodyBytes();
+        this.properties = properties;
         this.errorWriter = errorWriter;
     }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
                                     FilterChain filterChain) throws ServletException, IOException {
+        long maxRequestBodyBytes = properties.getWeb().getMaxRequestBodyBytes();
         boolean hasBody = !HttpMethod.GET.matches(request.getMethod())
                 && !HttpMethod.HEAD.matches(request.getMethod());
         if (maxRequestBodyBytes > 0

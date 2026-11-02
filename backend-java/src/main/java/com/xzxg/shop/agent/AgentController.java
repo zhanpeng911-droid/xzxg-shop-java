@@ -211,15 +211,18 @@ public class AgentController {
         };
 
         try {
-            runtime.stream(runResult.run(), created.message(), emitter);
+            runtime.stream(runResult.run(), created.message(), emitter,
+                    () -> repository.isRunCanceled(runResult.run().runId()));
         } catch (IOException ex) {
-            repository.updateRunStatus(user.accountId(), runResult.run().runId(), "failed");
+            repository.updateRunStatus(user.accountId(), runResult.run().runId(), "canceled");
             throw ex;
         }
         flushText(currentText, segments);
         repository.updateRunResult(user.accountId(), runResult.run().runId(),
                 content.toString().trim(), blocks, followups, segments);
-        repository.updateRunStatus(user.accountId(), runResult.run().runId(), "completed");
+        if (!repository.isRunCanceled(runResult.run().runId())) {
+            repository.updateRunStatus(user.accountId(), runResult.run().runId(), "completed");
+        }
     }
 
     @PostMapping("/api/v1/agent/runs/{runAction}")

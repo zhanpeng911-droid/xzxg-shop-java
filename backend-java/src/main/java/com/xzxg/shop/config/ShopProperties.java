@@ -17,6 +17,7 @@ public class ShopProperties {
     private final Retrieval retrieval = new Retrieval();
     private final Agent agent = new Agent();
     private final Speech speech = new Speech();
+    private final Nacos nacos = new Nacos();
 
     public Web getWeb() {
         return web;
@@ -40,6 +41,10 @@ public class ShopProperties {
 
     public Speech getSpeech() {
         return speech;
+    }
+
+    public Nacos getNacos() {
+        return nacos;
     }
 
     public static class Web {
@@ -865,6 +870,82 @@ public class ShopProperties {
 
         public void setMaxRunes(int maxRunes) {
             this.maxRunes = maxRunes;
+        }
+    }
+
+    public static class Nacos {
+
+        private boolean enabled = false;
+        private String serverAddr = "http://127.0.0.1:8848";
+        private String namespace = "";
+        private String group = "XZXG_SHOP";
+        private String dataId = "xzxg-shop-app-config.json";
+        private String username = "";
+        private String password = "";
+        private long refreshMs = 30_000;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getServerAddr() {
+            return serverAddr;
+        }
+
+        public void setServerAddr(String serverAddr) {
+            this.serverAddr = serverAddr;
+        }
+
+        public String getNamespace() {
+            return namespace;
+        }
+
+        public void setNamespace(String namespace) {
+            this.namespace = namespace;
+        }
+
+        public String getGroup() {
+            return group;
+        }
+
+        public void setGroup(String group) {
+            this.group = group;
+        }
+
+        public String getDataId() {
+            return dataId;
+        }
+
+        public void setDataId(String dataId) {
+            this.dataId = dataId;
+        }
+
+        public String getUsername() {
+            return username;
+        }
+
+        public void setUsername(String username) {
+            this.username = username;
+        }
+
+        public String getPassword() {
+            return password;
+        }
+
+        public void setPassword(String password) {
+            this.password = password;
+        }
+
+        public long getRefreshMs() {
+            return refreshMs;
+        }
+
+        public void setRefreshMs(long refreshMs) {
+            this.refreshMs = refreshMs;
         }
     }
 }

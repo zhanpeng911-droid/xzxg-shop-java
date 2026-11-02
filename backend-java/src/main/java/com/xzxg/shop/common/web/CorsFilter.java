@@ -26,12 +26,10 @@ public class CorsFilter extends OncePerRequestFilter {
     private static final String ALLOWED_HEADERS = "Content-Type, Accept, Authorization";
     private static final String ALLOWED_METHODS = "GET, POST, PATCH, DELETE, OPTIONS";
 
-    private final List<String> allowedOrigins;
+    private final ShopProperties properties;
 
     public CorsFilter(ShopProperties properties) {
-        this.allowedOrigins = properties.getWeb().getCors().getAllowedOrigins().stream()
-                .filter(origin -> origin != null && !origin.isBlank())
-                .toList();
+        this.properties = properties;
     }
 
     @Override
@@ -53,6 +51,9 @@ public class CorsFilter extends OncePerRequestFilter {
     }
 
     private String resolveAllowedOrigin(String origin) {
+        List<String> allowedOrigins = properties.getWeb().getCors().getAllowedOrigins().stream()
+                .filter(value -> value != null && !value.isBlank())
+                .toList();
         if (allowedOrigins.isEmpty() || allowedOrigins.contains("*")) {
             return "*";
         }

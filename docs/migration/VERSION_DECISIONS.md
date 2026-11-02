@@ -21,8 +21,10 @@
 | MinIO OkHttp | `okhttp-jvm` 5.5.1 | MinIO 9 的 `okhttp` 坐标是 KMP 元数据 jar | 编译通过 |
 | 图片格式 | TwelveMonkeys `imageio-webp` 3.15.3 | Java 原生不支持 WebP | 单测覆盖 PNG/透明；WebP 待样本 |
 | WebSocket | `spring-boot-starter-websocket` | 实时 ASR 代理 | 代码完成，未联调 |
-| 测试 | JUnit 5 + AssertJ + spring-test | Boot 4 starter-test | 32 单测 + 5 集成测试 |
-| MySQL 集成测试 | 本机 MySQL 8.0.12（隔离 schema） | 无 Testcontainers 依赖 | P2–P6 通过 |
+| 配置中心 | Nacos v1 HTTP API（无额外 SDK） | 读取/发布 JSON data id + 定时刷新 | 未连接真实 Nacos |
+| 测试门禁 | Maven Failsafe（`-DskipITs=false`） | 集成测试显式接入验收命令 | 41 单测 + 9 集成通过 |
+| 测试 | JUnit 5 + AssertJ + spring-test | Boot 4 starter-test | 41 单测 + 9 集成 |
+| MySQL 集成测试 | 本机 MySQL 8.0.12（隔离 schema） | 无 Testcontainers 依赖 | P2–P6 + AgentPolicy/Idempotency |
 
 ## 2. 明确未引入
 
@@ -33,7 +35,6 @@
 | Spring AI | 默认 VectorStore schema 不保证兼容现有 Milvus 集合 |
 | Redis | 原限流为进程内固定窗口 |
 | JWT | 保留不透明 token 与 `auth_tokens` 表 |
-| Nacos 客户端 | 未实现；当前为进程内配置，见 KNOWN_DIFFERENCES |
 
 ## 3. 配置默认值（来自 Go 源码）
 

@@ -44,9 +44,9 @@ public class PromptSeeder implements ApplicationRunner {
                             "你是 xzxg-shop 的导购 Agent，回答要简洁、可执行，不编造商品或订单信息。",
                             "主 Agent 系统提示词"),
                     new PromptRepository.PromptSeed(TOOL_PROTOCOL, "工具调用协议 Prompt",
-                            "只输出 JSON。工具调用：{\"type\":\"tool_call\",\"tool\":\"工具名\",\"arguments\":{}}；"
-                                    + "技能调用：{\"type\":\"skill_call\",\"skill\":\"技能名\"}；"
-                                    + "最终回答：{\"type\":\"final\",\"text\":\"回答\"}。",
+                            "工具调用只输出 JSON：{\"type\":\"tool_call\",\"tool\":\"工具名\",\"arguments\":{}}；"
+                                    + "技能调用只输出 JSON：{\"type\":\"skill_call\",\"skill\":\"技能名\"}；"
+                                    + "最终回答只输出 <final>回答</final>，标签外不要输出正文。",
                             "ReAct 调用协议"),
                     new PromptRepository.PromptSeed("agent.prompt.final_output_rules",
                             "最终回答规范 Prompt",

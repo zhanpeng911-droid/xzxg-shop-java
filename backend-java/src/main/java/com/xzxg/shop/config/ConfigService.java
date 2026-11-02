@@ -2,6 +2,7 @@ package com.xzxg.shop.config;
 
 import com.xzxg.shop.common.GoTime;
 import com.xzxg.shop.domain.AppConfig;
+import jakarta.annotation.PostConstruct;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -10,19 +11,30 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 
 /**
- * In-memory config center mirroring the Go defaults. Nacos is not wired yet, so
- * updates are process-local and do not change already-created beans; the plan's
- * Nacos adapter remains a documented gap.
+ * Config center with optional Nacos persistence. Nacos values are loaded at startup
+ * and refreshed by {@link NacosRefreshJob}; selected keys drive live components.
  */
 @Service
 public class ConfigService {
 
-    private final Map<String, AppConfig> configs = new ConcurrentHashMap<>();
+    private static final Logger log = LoggerFactory.getLogger(ConfigService.class);
 
-    public ConfigService() {
+    private final Map<String, AppConfig> configs = new ConcurrentHashMap<>();
+    private final ShopProperties properties;
+    private final ObjectProvider<NacosConfigClient> nacos;
+    private final ObjectProvider<com.xzxg.shop.common.web.RateLimitFilter> rateLimitFilter;
+
+    public ConfigService(ShopProperties properties, ObjectProvider<NacosConfigClient> nacos,
+                         ObjectProvider<com.xzxg.shop.common.web.RateLimitFilter> rateLimitFilter) {
+        this.properties = properties;
+        this.nacos = nacos;
+        this.rateLimitFilter = rateLimitFilter;
         put("ai.active_provider", "qwen", "string", "当前生效模型供应商：qwen 或 doubao", "app", false);
         put("ai.qwen.base_url", "https://dashscope.aliyuncs.com/compatible-mode/v1",
                 "string", "千问 OpenAI 兼容模型服务 Base URL", "app", false);
@@ -38,6 +50,109 @@ public class ConfigService {
         put("risk.enabled", "true", "bool", "是否启用风控检查", "infra", false);
         put("retrieval.keyword.top_n", "200", "int", "关键词召回数量", "infra", false);
         put("retrieval.vector.top_n", "40", "int", "向量召回数量", "infra", false);
+    }
+
+    @PostConstruct
+    void initialize() {
+        NacosConfigClient client = nacos.getIfAvailable();
+        if (client == null) {
+            return;
+        }
+        try {
+            var remote = client.load();
+            if (remote.isPresent()) {
+                mergeRemote(remote.get());
+                applyToProperties();
+            } else {
+                client.publish(snapshot());
+            }
+        } catch (Exception ex) {
+            log.warn("nacos config unavailable, using defaults: {}", ex.getMessage());
+        }
+    }
+
+    public void mergeRemote(Map<String, String> values) {
+        for (Map.Entry<String, String> entry : values.entrySet()) {
+            String key = entry.getKey();
+            if (key == null || key.isBlank() || key.startsWith("agent.prompt.")) {
+                continue;
+            }
+            AppConfig existing = configs.get(key);
+            configs.put(key, new AppConfig(key, entry.getValue() == null ? "" : entry.getValue(),
+                    existing == null ? "string" : existing.valueType(),
+                    existing == null ? "" : existing.description(),
+                    existing == null ? domainFor(key) : existing.domain(),
+                    existing != null && existing.isSecret(), GoTime.format(LocalDateTime.now())));
+        }
+        applyToProperties();
+    }
+
+    public void applyToProperties() {
+        String origins = value("http.cors.allowed_origins", "*");
+        properties.getWeb().getCors().setAllowedOrigins(csv(origins));
+        properties.getWeb().setTrustedProxies(csv(value("http.trusted_proxy_cidrs", "")));
+        properties.getWeb().setTrustAllProxies(Boolean.parseBoolean(
+                value("http.trust_all_proxies", "false")));
+        properties.getFiles().setMaxUploadBytes(longValue("files.max_upload_bytes",
+                properties.getFiles().getMaxUploadBytes()));
+        properties.getWeb().getRateLimit().setEnabled(Boolean.parseBoolean(
+                value("rate_limit.enabled", String.valueOf(
+                        properties.getWeb().getRateLimit().isEnabled()))));
+        properties.getWeb().getRateLimit().setLimit((int) longValue("rate_limit.limit",
+                properties.getWeb().getRateLimit().getLimit()));
+        properties.getWeb().getRateLimit().setWindowSeconds(longValue("rate_limit.window_seconds",
+                properties.getWeb().getRateLimit().getWindowSeconds()));
+        properties.getRetrieval().getVector().setEnabled(Boolean.parseBoolean(
+                value("vector.enabled", String.valueOf(
+                        properties.getRetrieval().getVector().isEnabled()))));
+        rateLimitFilter.ifAvailable(com.xzxg.shop.common.web.RateLimitFilter::refresh);
+    }
+
+    private String value(String key, String fallback) {
+        AppConfig item = configs.get(key);
+        return item == null || item.configValue() == null || item.configValue().isBlank()
+                ? fallback : item.configValue();
+    }
+
+    private long longValue(String key, long fallback) {
+        try {
+            return Long.parseLong(value(key, String.valueOf(fallback)).trim());
+        } catch (NumberFormatException ex) {
+            return fallback;
+        }
+    }
+
+    private static List<String> csv(String value) {
+        if (value == null || value.isBlank()) {
+            return List.of();
+        }
+        List<String> items = new ArrayList<>();
+        for (String part : value.split(",")) {
+            String trimmed = part.trim();
+            if (!trimmed.isEmpty()) {
+                items.add(trimmed);
+            }
+        }
+        return items;
+    }
+
+    public Map<String, String> snapshot() {
+        Map<String, String> values = new LinkedHashMap<>();
+        configs.values().stream().sorted(Comparator.comparing(AppConfig::configKey))
+                .forEach(item -> values.put(item.configKey(), item.configValue()));
+        return values;
+    }
+
+    private void publish() {
+        NacosConfigClient client = nacos.getIfAvailable();
+        if (client == null) {
+            return;
+        }
+        try {
+            client.publish(snapshot());
+        } catch (Exception ex) {
+            log.warn("nacos publish failed: {}", ex.getMessage());
+        }
     }
 
     public List<AppConfig> list() {
@@ -59,6 +174,8 @@ public class ConfigService {
                 description == null ? "" : description, domainFor(key), secret,
                 GoTime.format(LocalDateTime.now()));
         configs.put(key, item);
+        applyToProperties();
+        publish();
         return new AppConfig(item.configKey(), mask(item), item.valueType(), item.description(),
                 item.domain(), item.isSecret(), item.updatedAt());
     }

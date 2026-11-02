@@ -22,17 +22,18 @@ cd backend-java
 ./mvnw package               # executable jar
 ```
 
-Integration tests run against a real MySQL schema and are named `*IT`:
+Integration tests run against a real MySQL schema and are wired into Failsafe:
 
 ```bash
 # create an isolated database first
 SHOP_IT_DB_URL='jdbc:mysql://127.0.0.1:3306/xzxg_shop_it?useSSL=false&serverTimezone=Asia/Hong_Kong' \
 SHOP_IT_DB_USERNAME=root SHOP_IT_DB_PASSWORD=... \
-./mvnw -Dtest=P2FlowIT,P3FlowIT,P4FlowIT,P5FlowIT,P6FlowIT test
+./mvnw verify -DskipITs=false
 ```
 
-Each `*IT` boots the real servlet stack and exercises HTTP/SSE against MySQL.
-They mutate the target database; use a disposable schema.
+`-DskipITs=false` runs all `*IT` classes (P2–P6, AgentPolicyIT, IdempotencyIT;
+TakeoverBaselineIT is skipped unless `SHOP_TAKEOVER_URL` is set). The default
+`verify` only runs unit/infrastructure tests.
 
 ## Run
 
@@ -69,6 +70,7 @@ documents and chunks. It never runs on normal API startup.
 | `SHOP_CORS_ALLOWED_ORIGINS` | `*` | CORS origins |
 | `SHOP_RATE_LIMIT_ENABLED` / `_LIMIT` / `_WINDOW_SECONDS` | true / 120 / 60 | Fixed-window limiter |
 | `SHOP_DEMO_SEED_ENABLED` | `false` | Apply `db/seed/local-demo.sql` |
+| `NACOS_ENABLED` / `NACOS_ADDR` / `NACOS_GROUP` / `NACOS_DATA_ID` | false / 127.0.0.1:8848 / XZXG_SHOP / xzxg-shop-app-config.json | Nacos config |
 | `MINIO_ENDPOINT` / `_ACCESS_KEY` / `_SECRET_KEY` / `_BUCKET` | 127.0.0.1:9000 / minioadmin / minioadmin / xzxg-shop-assets | Object storage |
 | `VECTOR_ENABLED` | `false` | Milvus retrieval |
 | `MILVUS_ADDRESS` / `MILVUS_TOKEN` | http://127.0.0.1:19530 / root:Milvus | Milvus |

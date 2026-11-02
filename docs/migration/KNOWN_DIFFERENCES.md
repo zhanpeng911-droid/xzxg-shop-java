@@ -38,21 +38,20 @@
 | 旧库回填 | 不自动执行，见 `DB_TAKEOVER.md` | 启动时自动补列/回填 | 避免启动即改历史数据 |
 | 迁移工具 | Flyway + 显式 baseline | 幂等 SQL | 结构可审计 |
 | 头像静态 404 | 空 404 | 纯文本 | 低风险 |
-| Nacos | 进程内配置（`ConfigService`） | Nacos + 内存降级 | 动态刷新未实现 |
+| Nacos | 已实现客户端/刷新；未连接真实 Nacos | Nacos + 内存降级 | 真实持久化与刷新未验证 |
 
 ## 3. 已实现但未联调（不得当作已验证）
 
 | 能力 | 实现情况 | 缺什么 |
 |---|---|---|
 | MinIO 文件上传/下载 | `ObjectStorage` + `/api/v1/files` + `stored_files` | 本机无 MinIO，未做 bucket 往返 |
-| Milvus 检索 | REST search + 状态查询；知识/图片检索失败降级 | 未实现 collection 创建/向量 upsert/bootstrap |
-| 真实模型 Agent | OpenAI 兼容 `chat/completions` + ReAct JSON 协议 | 无 API Key；只验证了确定性兜底 |
-| LLM 流式 | 回答完成后按 24 字符分块发 SSE | 不是 token 级实时流 |
-| Prompt | 数据库读写/草稿/发布 + 7 个简化默认值 | 未逐字迁移 Go 的全部 Prompt 常量与意图 Prompt |
-| 记忆 | 最近 5 条对话 + 当前 session | 未迁移 Go 的 need_summary/memory_retrieval 模型流程 |
-| 规划/意图 | 关键词规则 + 可选模型 ReAct | 未迁移 Go 的一级 route/P1-P6 模型规划 |
+| Milvus 检索/写入 | REST search + 建集合/upsert/load + 文本/图片 bootstrap | 只做了 REST stub 单测；未连接真实 Milvus |
+| Nacos 配置 | v1 API 读取/发布 + 定时刷新 + 驱动 CORS/限流/体积/代理/vector 开关 | 未连接真实 Nacos |
+| 真实模型 Agent | `stream=true` 增量 SSE、ReAct JSON、角色模型、Prompt DB | 无 API Key；stub 只验证协议/策略/取消 |
 | 语音 TTS | 讯飞 WSS 签名 + 豆包 HTTP 适配 | 无密钥，未实测 |
 | 实时 ASR | WebSocket 代理、控制帧、ready/partial/final | 无密钥，未实测 |
+| Prompt | 数据库草稿/发布 + 7 个简化默认值 | 未逐字迁移 Go 全部 Prompt/意图 Prompt |
+| 规划/记忆 | 关键词意图 + 可选模型 ReAct；最近 5 条对话 | 未迁移 need_summary/memory_retrieval/一级 route 模型规划 |
 | 测评 | 意图/rag/商品/图片接口 + 看板/报告扫描 | 无真实报告文件与 Node 脚本联调 |
 | 商品导入 | 294 商品/973 SKU/1121 文档/1962 chunk 实测 | 未与 Go 导入结果逐行对照 |
 

@@ -1,7 +1,6 @@
 package com.xzxg.shop.agent;
 
 import com.xzxg.shop.account.AccountRepository;
-import com.xzxg.shop.common.PageRequest;
 import com.xzxg.shop.common.api.ApiException;
 import com.xzxg.shop.domain.Account;
 import com.xzxg.shop.domain.AgentBlock;
@@ -13,10 +12,14 @@ import com.xzxg.shop.domain.UserMessage;
 import com.xzxg.shop.knowledge.KnowledgeService;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.springframework.stereotype.Service;
@@ -24,9 +27,8 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * ReAct runtime. When an API key is configured it uses the LLM protocol
- * ({@code tool_call} / {@code final}); otherwise a deterministic local fallback
- * keeps the guide usable.
+ * ReAct runtime with intent policy enforcement and cancellation checks between
+ * every model call and tool execution.
  */
 @Service
 public class AgentRuntime {
@@ -37,6 +39,9 @@ public class AgentRuntime {
 
     public interface Emitter {
         void emit(SSEEvent event) throws IOException;
+    }
+
+    public record Plan(String route, String intent) {
     }
 
     private final AgentRepository repository;
@@ -65,11 +70,20 @@ public class AgentRuntime {
     }
 
     public void stream(AgentRun run, UserMessage message, Emitter emit) throws IOException {
+        stream(run, message, emit, () -> false);
+    }
+
+    public void stream(AgentRun run, UserMessage message, Emitter emit, BooleanSupplier canceled)
+            throws IOException {
         repository.recordTrace(run.runId(), run.traceId(), run.accountId(), "run", "start",
                 "", "ok", 0, "", "{\"session_id\":\"" + run.sessionId() + "\"}");
         emit.emit(new SSEEvent("message_start", run.runId(), run.sessionId(), message.messageId(),
                 run.traceId(), null, null, null, null, null, null, null, null, null));
 
+        if (canceled.getAsBoolean()) {
+            emitCanceled(run, emit);
+            return;
+        }
         RiskService.Result textRisk = risk.checkText(message.content());
         if (textRisk.blocked()) {
             emitText(run, textRisk.message(), emit);
@@ -94,22 +108,47 @@ public class AgentRuntime {
 
         emitStatus(run, "intent", "正在理解你的需求", emit);
         String query = message.content() == null ? "" : message.content().trim();
-        boolean nonGuide = isNonGuide(query);
-        if (nonGuide) {
-            deterministic(run, account, query, emit);
-        } else if (llm.enabled()) {
-            react(run, account, query, emit);
-        } else {
-            localGuide(run, query, emit);
+        Plan plan = plan(query);
+        ToolPolicy.Policy policy = ToolPolicy.forPlan(plan.route(), plan.intent());
+        repository.recordTrace(run.runId(), run.traceId(), run.accountId(), "planner", "selected",
+                "", "ok", 0, "", "{\"route\":\"" + plan.route() + "\",\"intent\":\""
+                        + plan.intent() + "\"}");
+
+        Set<String> allowedProductIds = new HashSet<>();
+        Matcher explicitProducts = PRODUCT_ID.matcher(query);
+        while (explicitProducts.find()) {
+            allowedProductIds.add(explicitProducts.group(1));
+        }
+        try {
+            if ("non_guide".equals(plan.route()) && !llm.enabled()) {
+                deterministic(run, account, query, plan, policy, allowedProductIds, canceled, emit);
+            } else if (llm.enabled()) {
+                react(run, account, query, plan, policy, allowedProductIds, canceled, emit);
+            } else {
+                localGuide(run, query, policy, allowedProductIds, emit);
+            }
+        } catch (CancellationException ex) {
+            emitCanceled(run, emit);
+            return;
+        }
+        if (canceled.getAsBoolean()) {
+            emitCanceled(run, emit);
+            return;
         }
         emit.emit(new SSEEvent("followups", run.runId(), null, null, null, null, null, null,
-                null, null, null, followups(nonGuide), null, null));
+                null, null, null, followups(plan), null, null));
         emit.emit(SSEEvent.of("message_end", run.runId()));
     }
 
-    private void localGuide(AgentRun run, String query, Emitter emit) throws IOException {
+    private void localGuide(AgentRun run, String query, ToolPolicy.Policy policy,
+                            Set<String> allowedProductIds, Emitter emit) throws IOException {
+        if (!policy.allowsTool("search_products")) {
+            emitText(run, "当前请求不在商品导购范围内，可以告诉我想买的商品或使用场景。", emit);
+            return;
+        }
         ToolRegistry.Observation observation = tools.execute("search_products",
                 Map.of("query", query, "limit", 5), accountOf(run));
+        rememberProducts(observation, allowedProductIds);
         emitObservation(run, observation, emit);
         if (observation.result().get("items") instanceof List<?> items && !items.isEmpty()) {
             StringBuilder text = new StringBuilder("根据当前商品库，为你找到这些选择：");
@@ -133,56 +172,94 @@ public class AgentRuntime {
         }
     }
 
-    private void deterministic(AgentRun run, Account account, String query, Emitter emit)
-            throws IOException {
+    private void deterministic(AgentRun run, Account account, String query, Plan plan,
+                               ToolPolicy.Policy policy, Set<String> allowedProductIds,
+                               BooleanSupplier canceled, Emitter emit) throws IOException {
         String lower = query.toLowerCase(Locale.ROOT);
-        ToolRegistry.Observation observation;
+        if ("navigation_service".equals(plan.intent())) {
+            String skill = navigationSkill(lower);
+            executeSkillAndReply(run, skill, policy, emit);
+            return;
+        }
+        String tool;
+        Map<String, Object> args = Map.of();
         if (lower.contains("结算") || lower.contains("下单")) {
-            observation = tools.execute("checkout", Map.of(), account);
+            tool = "checkout";
         } else if (lower.contains("加购") || lower.contains("加入购物车")) {
             Matcher matcher = PRODUCT_ID.matcher(query);
             if (matcher.find()) {
-                observation = tools.execute("add_cart_item",
-                        Map.of("product_id", matcher.group(1), "quantity", 1), account);
+                tool = "add_cart_item";
+                args = Map.of("product_id", matcher.group(1), "quantity", 1);
             } else {
-                observation = tools.execute("search_products",
-                        Map.of("query", query, "limit", 5), account);
-                emitObservation(run, observation, emit);
-                emitText(run, "请先确认要加购的商品，我可以根据上面的结果继续。", emit);
-                return;
+                tool = "search_products";
+                args = Map.of("query", query, "limit", 5);
             }
         } else if (lower.contains("支付") || lower.contains("付款")) {
             Matcher matcher = ORDER_ID.matcher(query);
-            observation = matcher.find()
-                    ? tools.execute("pay_order", Map.of("order_id", matcher.group(1), "method", "mock_balance"), account)
-                    : tools.execute("list_orders", Map.of(), account);
+            tool = matcher.find() ? "pay_order" : "list_orders";
+            if (matcher.find(0)) {
+                args = Map.of("order_id", matcher.group(1), "method", "mock_balance");
+            }
         } else if (lower.contains("取消订单") || lower.contains("取消")) {
             Matcher matcher = ORDER_ID.matcher(query);
-            observation = matcher.find()
-                    ? tools.execute("cancel_order", Map.of("order_id", matcher.group(1), "reason", "用户取消"), account)
-                    : tools.execute("list_orders", Map.of(), account);
+            tool = matcher.find() ? "cancel_order" : "list_orders";
+            if (matcher.find(0)) {
+                args = Map.of("order_id", matcher.group(1), "reason", "用户取消");
+            }
         } else if (lower.contains("收货")) {
             Matcher matcher = ORDER_ID.matcher(query);
-            observation = matcher.find()
-                    ? tools.execute("confirm_receipt", Map.of("order_id", matcher.group(1)), account)
-                    : tools.execute("list_orders", Map.of(), account);
+            tool = matcher.find() ? "confirm_receipt" : "list_orders";
+            if (matcher.find(0)) {
+                args = Map.of("order_id", matcher.group(1));
+            }
         } else if (lower.contains("优惠券") || lower.contains("券")) {
-            observation = tools.execute("list_user_coupons", Map.of(), account);
+            tool = "list_user_coupons";
         } else if (lower.contains("促销") || lower.contains("活动")) {
-            observation = tools.execute("list_promotions", Map.of(), account);
+            tool = "list_promotions";
+        } else if (lower.contains("评价") || lower.contains("评论")) {
+            tool = "list_orders";
         } else if (lower.contains("购物车")) {
-            observation = tools.execute("get_cart", Map.of(), account);
+            tool = "get_cart";
         } else {
-            observation = tools.execute("list_orders", Map.of(), account);
+            tool = "list_orders";
         }
+
+        if (!policy.allowsTool(tool)) {
+            emitText(run, "当前请求需要的能力不在本轮可用范围内，可以说明具体要查看或操作的内容。", emit);
+            return;
+        }
+        if ("add_cart_item".equals(tool)) {
+            String productId = String.valueOf(args.getOrDefault("product_id", ""));
+            if (productId.isBlank() || !allowedProductIds.contains(productId)) {
+                emitText(run, "没有本轮检索确认过的商品 ID，不能直接加购；请先告诉我具体商品。", emit);
+                return;
+            }
+        }
+        if (canceled.getAsBoolean()) {
+            throw new CancellationException("run canceled");
+        }
+        ToolRegistry.Observation observation = tools.execute(tool, args, account);
+        rememberProducts(observation, allowedProductIds);
         emitObservation(run, observation, emit);
         emitText(run, observation.message(), emit);
     }
 
-    private void react(AgentRun run, Account account, String query, Emitter emit)
-            throws IOException {
+    private void executeSkillAndReply(AgentRun run, String skill, ToolPolicy.Policy policy,
+                                      Emitter emit) throws IOException {
+        if (!policy.allowsSkill(skill)) {
+            emitText(run, "当前请求不在可用入口范围内。", emit);
+            return;
+        }
+        ToolRegistry.Observation observation = skills.execute(skill);
+        emitObservation(run, observation, emit);
+        emitText(run, observation.message(), emit);
+    }
+
+    private void react(AgentRun run, Account account, String query, Plan plan,
+                       ToolPolicy.Policy policy, Set<String> allowedProductIds,
+                       BooleanSupplier canceled, Emitter emit) throws IOException {
         List<LlmClient.Message> messages = new ArrayList<>();
-        messages.add(new LlmClient.Message("system", systemPrompt()));
+        messages.add(new LlmClient.Message("system", systemPrompt(plan, policy)));
         var memory = repository.recentConversations(account.accountId(), run.sessionId(), 5);
         if (!memory.isEmpty()) {
             StringBuilder context = new StringBuilder("最近对话：");
@@ -197,17 +274,31 @@ public class AgentRuntime {
         messages.add(new LlmClient.Message("user", query));
 
         for (int step = 0; step < MAX_STEPS; step++) {
-            String model = llm.smallModel();
+            if (canceled.getAsBoolean()) {
+                throw new CancellationException("run canceled");
+            }
             String raw;
             try {
-                raw = llm.complete(model, messages, 1.0);
+                StreamAnswer answer = streamAnswer(run, messages, allowedProductIds, canceled, emit);
+                raw = answer.raw();
+                if (answer.streamed()) {
+                    return;
+                }
+            } catch (CancellationException ex) {
+                throw ex;
             } catch (Exception ex) {
-                localGuide(run, query, emit);
+                localGuide(run, query, policy, allowedProductIds, emit);
                 return;
             }
             JsonNode action = parseAction(raw);
             if (action != null && "skill_call".equals(action.path("type").asString())) {
                 String skill = action.path("skill").asString("");
+                if (!ToolPolicy.knownSkills().contains(skill) || !policy.allowsSkill(skill)) {
+                    messages.add(new LlmClient.Message("assistant", raw));
+                    messages.add(new LlmClient.Message("user",
+                            "observation: 技能不在当前意图白名单中，禁止执行：" + skill));
+                    continue;
+                }
                 ThoughtStep thought = new ThoughtStep("step_" + (step + 1), "执行技能 " + skill,
                         "running", null, null, null, step + 1);
                 emit.emit(thinking(run.runId(), thought));
@@ -228,10 +319,30 @@ public class AgentRuntime {
                         new tools.jackson.core.type.TypeReference<Map<String, Object>>() {
                         })
                         : Map.of();
+                if (!ToolPolicy.knownTools().contains(tool) || !policy.allowsTool(tool)) {
+                    messages.add(new LlmClient.Message("assistant", raw));
+                    messages.add(new LlmClient.Message("user",
+                            "observation: 工具不在当前意图白名单中，禁止执行：" + tool
+                                    + "；请改用可用工具或输出 final 说明能力边界。"));
+                    continue;
+                }
+                if ("add_cart_item".equals(tool)) {
+                    String productId = String.valueOf(args.getOrDefault("product_id", ""));
+                    if (productId.isBlank() || !allowedProductIds.contains(productId)) {
+                        messages.add(new LlmClient.Message("assistant", raw));
+                        messages.add(new LlmClient.Message("user",
+                                "observation: 当前轮没有可加购的商品白名单 ID；禁止根据猜测、购物车或列表位置加购。"));
+                        continue;
+                    }
+                }
+                if (canceled.getAsBoolean()) {
+                    throw new CancellationException("run canceled");
+                }
                 ThoughtStep thought = new ThoughtStep("step_" + (step + 1), "调用工具 " + tool,
                         "running", null, null, null, step + 1);
                 emit.emit(thinking(run.runId(), thought));
                 ToolRegistry.Observation observation = tools.execute(tool, args, account);
+                rememberProducts(observation, allowedProductIds);
                 ThoughtStep done = new ThoughtStep("step_" + (step + 1), "调用工具 " + tool,
                         "completed", observation.message(), null, null, step + 1);
                 emit.emit(thinking(run.runId(), done));
@@ -243,13 +354,144 @@ public class AgentRuntime {
             }
             String finalText = extractFinal(raw);
             if (finalText.isBlank()) {
-                localGuide(run, query, emit);
+                localGuide(run, query, policy, allowedProductIds, emit);
                 return;
             }
             emitText(run, finalText, emit);
             return;
         }
         emitText(run, "这个问题需要更多信息，可以再具体描述一下吗？", emit);
+    }
+
+    private record StreamAnswer(String raw, String finalText, boolean streamed) {
+    }
+
+    private StreamAnswer streamAnswer(AgentRun run, List<LlmClient.Message> messages,
+                                      Set<String> allowedProductIds, BooleanSupplier canceled,
+                                      Emitter emit) throws Exception {
+        StringBuilder raw = new StringBuilder();
+        StringBuilder prefix = new StringBuilder();
+        StringBuilder finalText = new StringBuilder();
+        boolean[] inFinal = {false};
+        StreamTextFilter filter = new StreamTextFilter(List.copyOf(allowedProductIds), id -> {
+        },
+                block -> {
+                    try {
+                        emit.emit(SSEEvent.block(run.runId(), block));
+                    } catch (IOException ex) {
+                        throw new java.io.UncheckedIOException(ex);
+                    }
+                }, objectMapper);
+        FinalForwarder forwarder = new FinalForwarder(run, finalText, emit, filter);
+        try {
+            llm.stream(llm.smallModel(), messages, 0.3, canceled, delta -> {
+                raw.append(delta);
+                if (forwarder.done()) {
+                    return;
+                }
+                if (!inFinal[0]) {
+                    prefix.append(delta);
+                    int index = prefix.indexOf("<final>");
+                    if (index >= 0) {
+                        inFinal[0] = true;
+                        try {
+                            emitStatus(run, "answer", "正在生成回答", emit);
+                        } catch (IOException ex) {
+                            throw new java.io.UncheckedIOException(ex);
+                        }
+                        forwarder.forward(prefix.substring(index + 7));
+                    }
+                    return;
+                }
+                forwarder.forward(delta);
+            });
+        } catch (java.io.UncheckedIOException ex) {
+            throw ex.getCause();
+        }
+        if (inFinal[0] && !forwarder.done()) {
+            forwarder.forward("");
+        }
+        return new StreamAnswer(raw.toString(), finalText.toString(), inFinal[0]);
+    }
+
+    private final class FinalForwarder {
+        private final AgentRun run;
+        private final StringBuilder finalText;
+        private final Emitter emit;
+        private final StreamTextFilter filter;
+        private final StringBuilder pending = new StringBuilder();
+        private boolean done;
+
+        private FinalForwarder(AgentRun run, StringBuilder finalText, Emitter emit,
+                               StreamTextFilter filter) {
+            this.run = run;
+            this.finalText = finalText;
+            this.emit = emit;
+            this.filter = filter;
+        }
+
+        private boolean done() {
+            return done;
+        }
+
+        private void forward(String delta) {
+            if (done) {
+                return;
+            }
+            pending.append(delta);
+            String buffer = pending.toString();
+            int close = buffer.indexOf("</final>");
+            if (close >= 0) {
+                done = true;
+                String part = buffer.substring(0, close);
+                pending.setLength(0);
+                emitClean(part);
+                return;
+            }
+            if (buffer.length() > 8) {
+                String safe = buffer.substring(0, buffer.length() - 8);
+                pending.setLength(0);
+                pending.append(buffer.substring(buffer.length() - 8));
+                emitClean(safe);
+            }
+        }
+
+        private void emitClean(String part) {
+            if (part.isEmpty()) {
+                return;
+            }
+            String clean = filter.clean(part);
+            if (clean.isEmpty()) {
+                return;
+            }
+            finalText.append(clean);
+            try {
+                emit.emit(new SSEEvent("content_delta", run.runId(), null, null, null, null,
+                        null, null, null, Blocks.text(clean), null, null, null, null));
+                emit.emit(SSEEvent.delta("text_delta", run.runId(), clean));
+            } catch (IOException ex) {
+                throw new java.io.UncheckedIOException(ex);
+            }
+        }
+    }
+
+    private void rememberProducts(ToolRegistry.Observation observation,
+                                  Set<String> allowedProductIds) {
+        Object status = observation.result().get("relevance_status");
+        boolean acceptable = status == null || "ok".equals(status) || "matched".equals(status);
+        if (!acceptable) {
+            return;
+        }
+        Object items = observation.result().get("items");
+        if (items instanceof List<?> list) {
+            for (Object item : list) {
+                if (item instanceof ProductCard card) {
+                    allowedProductIds.add(card.productId());
+                } else if (item instanceof Map<?, ?> map && map.get("productId") != null) {
+                    allowedProductIds.add(String.valueOf(map.get("productId")));
+                }
+            }
+        }
     }
 
     private void emitObservation(AgentRun run, ToolRegistry.Observation observation,
@@ -272,6 +514,11 @@ public class AgentRuntime {
                     null, null, Blocks.text(chunk), null, null, null, null));
             emit.emit(SSEEvent.delta("text_delta", run.runId(), chunk));
         }
+    }
+
+    private void emitCanceled(AgentRun run, Emitter emit) throws IOException {
+        emit.emit(SSEEvent.error(run.runId(), "canceled", "已停止生成"));
+        emit.emit(SSEEvent.of("message_end", run.runId()));
     }
 
     private void emitStatus(AgentRun run, String stage, String text, Emitter emit)
@@ -324,38 +571,110 @@ public class AgentRuntime {
         return raw.trim();
     }
 
-    private String systemPrompt() {
+    private String systemPrompt(Plan plan, ToolPolicy.Policy policy) {
         StringBuilder prompt = new StringBuilder();
         prompts.active(PromptSeeder.MAIN_TEMPLATE)
                 .ifPresent(value -> prompt.append(value.content()).append('\n'));
         prompts.active(PromptSeeder.TOOL_PROTOCOL)
                 .ifPresent(value -> prompt.append(value.content()).append('\n'));
+        prompt.append("当前 route=").append(plan.route())
+                .append("，intent=").append(plan.intent()).append("。\n");
+        prompt.append("可用工具：").append(policy.tools()).append('\n');
+        prompt.append("可用 skill：").append(policy.skills()).append('\n');
+        prompt.append("禁用能力：").append(policy.disabled()).append('\n');
+        prompt.append("工具使用侧重：\n");
+        for (String focus : policy.focus()) {
+            prompt.append("- ").append(focus).append('\n');
+        }
         prompt.append("""
-                可用工具：search_products、search_image_products、search_knowledge、get_cart、
-                add_cart_item、update_cart_item、delete_cart_item、checkout、list_orders、get_order、
-                pay_order、cancel_order、confirm_receipt、preview_discount、list_coupons、
-                list_user_coupons、claim_coupon、list_promotions、list_product_reviews、
-                create_product_review。
-                工具调用格式：{"type":"tool_call","tool":"工具名","arguments":{...}}
-                技能调用格式：{"type":"skill_call","skill":"navigate_cart|navigate_orders|navigate_products|coupon_help|order_help|after_sales_help"}
-                最终回答格式：{"type":"final","text":"给用户的回答"}
-                规则：没有商品依据时不要猜测商品 ID；不要重复执行历史对话里的加购或下单动作。
+                硬约束：
+                - 只能调用“可用工具”列表中的工具；禁止调用“禁用能力”中的工具。
+                - 需要的能力不在可用工具或 skill 中时，输出 <final>澄清或说明能力边界</final>。
+                - search_products 返回 relevance_status=weak/no_match 时，不得把候选商品当作推荐或挂品。
+                - 加购只能使用本轮回检索结果中的 product_id，不得猜测。
+                工具/技能调用只输出 JSON；最终回答只输出 <final>回答</final>，不要在标签外输出正文。
                 """);
         return prompt.toString();
     }
 
-    private static boolean isNonGuide(String query) {
-        String lower = query.toLowerCase(Locale.ROOT);
-        return lower.contains("购物车") || lower.contains("加购") || lower.contains("下单")
-                || lower.contains("结算") || lower.contains("订单") || lower.contains("支付")
-                || lower.contains("取消") || lower.contains("收货") || lower.contains("优惠券")
-                || lower.contains("促销") || lower.contains("活动");
+    private static String navigationSkill(String lower) {
+        if (lower.contains("订单")) {
+            return "navigate_orders";
+        }
+        if (lower.contains("商品") || lower.contains("产品")) {
+            return "navigate_products";
+        }
+        if (lower.contains("优惠") || lower.contains("券")) {
+            return "coupon_help";
+        }
+        return "navigate_cart";
     }
 
-    private static List<String> followups(boolean nonGuide) {
-        return nonGuide
-                ? List.of("查看我的订单", "看看购物车", "有什么优惠券")
-                : List.of("帮我对比这几款", "有没有更便宜的", "先加入购物车");
+    public static Plan plan(String query) {
+        String lower = query == null ? "" : query.toLowerCase(Locale.ROOT);
+        if (lower.contains("你好") || lower.contains("谢谢") || lower.contains("在吗")
+                || lower.contains("再见")) {
+            return new Plan("non_guide", "chitchat");
+        }
+        if (lower.contains("打开") || lower.contains("进入") || lower.contains("入口")
+                || (lower.contains("去") && lower.contains("页"))) {
+            return new Plan("non_guide", "navigation_service");
+        }
+        if (lower.contains("售后") || lower.contains("退款") || lower.contains("退货")
+                || lower.contains("换货") || lower.contains("保修") || lower.contains("发票")
+                || lower.contains("投诉")) {
+            return new Plan("non_guide", "after_sales_service");
+        }
+        if (lower.contains("评价") || lower.contains("评论") || lower.contains("差评")) {
+            return new Plan("non_guide", "review_service");
+        }
+        if (lower.contains("优惠券") || lower.contains("券") || lower.contains("促销")
+                || lower.contains("活动")) {
+            return new Plan("non_guide", "coupon_service");
+        }
+        if (lower.contains("订单") || lower.contains("支付") || lower.contains("付款")
+                || lower.contains("取消") || lower.contains("收货") || lower.contains("物流")) {
+            return new Plan("non_guide", "order_service");
+        }
+        if (lower.contains("购物车") || lower.contains("加购") || lower.contains("结算")
+                || lower.contains("下单")) {
+            return new Plan("non_guide", "cart_service");
+        }
+        if (lower.contains("账号") || lower.contains("登录") || lower.contains("注册")
+                || lower.contains("地址") || lower.contains("会员")) {
+            return new Plan("non_guide", "account_service");
+        }
+        if (lower.contains("对比") || lower.contains("比较") || lower.contains("选哪个")) {
+            return new Plan("guide", "compare_decide");
+        }
+        if (lower.contains("搭配") || lower.contains("穿搭") || lower.contains("风格")) {
+            return new Plan("guide", "outfit_styling");
+        }
+        if (lower.contains("场景") || lower.contains("清单") || lower.contains("一套")
+                || lower.contains("全家")) {
+            return new Plan("guide", "scene_solution");
+        }
+        if (lower.contains("预算") || lower.contains("以内") || lower.contains("不超过")
+                || lower.contains("排除") || lower.contains("不要")) {
+            return new Plan("guide", "category_shop_complex");
+        }
+        if (lower.contains("品牌") || lower.contains("旗舰店")) {
+            return new Plan("guide", "category_shop_brand");
+        }
+        if (lower.matches(".*(iphone|ipad|macbook|mate|pro|max|ultra|\\d{3,}).*")) {
+            return new Plan("guide", "product_deep");
+        }
+        if (lower.contains("好看") || lower.contains("ins") || lower.contains("ip")) {
+            return new Plan("guide", "open_explore");
+        }
+        return new Plan("guide", "category_shop_no_brand");
+    }
+
+    private static List<String> followups(Plan plan) {
+        if (!"guide".equals(plan.route())) {
+            return List.of("查看我的订单", "看看购物车", "有什么优惠券");
+        }
+        return List.of("帮我对比这几款", "有没有更便宜的", "先加入购物车");
     }
 
     private Account accountOf(AgentRun run) {

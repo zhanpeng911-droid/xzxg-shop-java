@@ -90,6 +90,56 @@ public class MilvusClient {
                 "collectionName", collection));
     }
 
+    public void ensureCollection(String collection, String primaryField, int dimension)
+            throws Exception {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("dbName", config.getDatabase());
+        payload.put("collectionName", collection);
+        payload.put("dimension", dimension);
+        payload.put("primaryFieldName", primaryField);
+        payload.put("idType", "VarChar");
+        payload.put("vectorFieldName", "embedding");
+        payload.put("metricType", "COSINE");
+        payload.put("autoID", false);
+        payload.put("enableDynamicField", true);
+        payload.put("params", Map.of("max_length", 256));
+        try {
+            post("/v2/vectordb/collections/create", payload);
+        } catch (Exception ex) {
+            String message = ex.getMessage() == null ? "" : ex.getMessage().toLowerCase();
+            if (!message.contains("already") && !message.contains("exist")
+                    && !message.contains("duplicate")) {
+                throw ex;
+            }
+        }
+    }
+
+    public void loadCollection(String collection) throws Exception {
+        post("/v2/vectordb/collections/load", Map.of(
+                "dbName", config.getDatabase(),
+                "collectionName", collection));
+    }
+
+    public void upsert(String collection, List<Map<String, Object>> entities) throws Exception {
+        if (entities == null || entities.isEmpty()) {
+            return;
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("dbName", config.getDatabase());
+        payload.put("collectionName", collection);
+        payload.put("data", entities);
+        post("/v2/vectordb/entities/upsert", payload);
+    }
+
+    public boolean collectionHasRows(String collection) {
+        try {
+            JsonNode stats = stats(collection).path("data").path("rowCount");
+            return stats.asLong(0) > 0;
+        } catch (Exception ex) {
+            return false;
+        }
+    }
+
     private JsonNode post(String path, Object payload) throws Exception {
         String body = objectMapper.writeValueAsString(payload);
         HttpRequest.Builder builder = HttpRequest.newBuilder(
