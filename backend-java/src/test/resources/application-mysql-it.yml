@@ -1,0 +1,19 @@
+# MySQL integration profile. Requires the xzxg_shop_it database to exist.
+spring:
+  datasource:
+    url: ${SHOP_IT_DB_URL:jdbc:mysql://127.0.0.1:3306/xzxg_shop_it?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Hong_Kong&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${SHOP_IT_DB_USERNAME:root}
+    password: ${SHOP_IT_DB_PASSWORD:}
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: false
+
+shop:
+  seed:
+    demo-enabled: true
+  web:
+    rate-limit:
+      enabled: false
+  agent:
+    api-key: ""

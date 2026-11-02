@@ -1,0 +1,141 @@
+spring:
+  application:
+    name: xzxg-shop
+  datasource:
+    url: ${SHOP_DB_URL:jdbc:mysql://127.0.0.1:3306/xzxg_shop?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Hong_Kong&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${SHOP_DB_USERNAME:root}
+    password: ${SHOP_DB_PASSWORD:}
+    hikari:
+      maximum-pool-size: ${SHOP_DB_POOL_SIZE:10}
+      connection-timeout: 5000
+  flyway:
+    enabled: ${SHOP_FLYWAY_ENABLED:true}
+    locations: classpath:db/migration
+    # Legacy databases are taken over explicitly; never auto-baseline an unknown schema.
+    baseline-on-migrate: false
+  mvc:
+    problemdetails:
+      enabled: false
+  jackson:
+    deserialization:
+      # Go zero-values missing request fields; Jackson 3 otherwise rejects null primitives.
+      fail-on-null-for-primitives: false
+  servlet:
+    multipart:
+      max-file-size: ${SHOP_MAX_UPLOAD_SIZE:12MB}
+      max-request-size: ${SHOP_MAX_REQUEST_SIZE:12MB}
+
+server:
+  port: ${SERVER_PORT:8082}
+  # Forwarded headers are only trusted via shop.web.trusted-proxies.
+  forward-headers-strategy: none
+  tomcat:
+    max-swallow-size: ${SHOP_MAX_SWALLOW_SIZE:12MB}
+    max-http-form-post-size: ${SHOP_MAX_FORM_POST_SIZE:12MB}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+
+shop:
+  web:
+    request-id-header: X-Request-ID
+    max-request-body-bytes: ${SHOP_MAX_REQUEST_BODY_BYTES:12582912}
+    trust-all-proxies: ${SHOP_TRUST_ALL_PROXIES:false}
+    trusted-proxies: ${SHOP_TRUSTED_PROXIES:}
+    cors:
+      allowed-origins: ${SHOP_CORS_ALLOWED_ORIGINS:*}
+    rate-limit:
+      enabled: ${SHOP_RATE_LIMIT_ENABLED:true}
+      limit: ${SHOP_RATE_LIMIT_LIMIT:120}
+      window-seconds: ${SHOP_RATE_LIMIT_WINDOW_SECONDS:60}
+  seed:
+    demo-enabled: ${SHOP_DEMO_SEED_ENABLED:false}
+  files:
+    max-upload-bytes: ${SHOP_FILES_MAX_UPLOAD_BYTES:10485760}
+    minio:
+      endpoint: ${MINIO_ENDPOINT:127.0.0.1:9000}
+      access-key: ${MINIO_ACCESS_KEY:minioadmin}
+      secret-key: ${MINIO_SECRET_KEY:minioadmin}
+      bucket: ${MINIO_BUCKET:xzxg-shop-assets}
+      use-ssl: ${MINIO_USE_SSL:false}
+  retrieval:
+    vector:
+      enabled: ${VECTOR_ENABLED:false}
+      milvus-address: ${MILVUS_ADDRESS:http://127.0.0.1:19530}
+      milvus-token: ${MILVUS_TOKEN:root:Milvus}
+      database: ${MILVUS_DATABASE:}
+      product-collection: ${MILVUS_PRODUCT_COLLECTION:product_text_vectors}
+      knowledge-collection: ${MILVUS_KNOWLEDGE_COLLECTION:knowledge_text_chunks}
+      image-collection: ${MILVUS_IMAGE_COLLECTION:product_image_vectors_v2}
+      top-n: ${VECTOR_TOP_N:40}
+      min-score: ${VECTOR_MIN_SCORE:0.58}
+    embedding:
+      base-url: ${EMBEDDING_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+      api-key: ${EMBEDDING_API_KEY:}
+      model: ${EMBEDDING_MODEL:text-embedding-v4}
+      batch-size: ${EMBEDDING_BATCH_SIZE:10}
+    image-embedding:
+      provider: ${IMAGE_EMBEDDING_PROVIDER:local_histogram}
+      base-url: ${IMAGE_EMBEDDING_BASE_URL:https://dashscope.aliyuncs.com}
+      api-key: ${IMAGE_EMBEDDING_API_KEY:}
+      model: ${IMAGE_EMBEDDING_MODEL:qwen3-vl-embedding}
+      dimension: ${IMAGE_EMBEDDING_DIMENSION:512}
+  agent:
+    base-url: ${AI_BASE_URL:${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}}
+    api-key: ${DASHSCOPE_API_KEY:${AI_API_KEY:}}
+    small-model: ${AI_SMALL_MODEL:qwen3.5-flash}
+    large-model: ${AI_LARGE_MODEL:qwen3.7-plus}
+    enable-thinking: ${AI_ENABLE_THINKING:false}
+  speech:
+    realtime:
+      app-id: ${XUNFEI_APP_ID:}
+      api-key: ${XUNFEI_API_KEY:}
+      api-secret: ${XUNFEI_API_SECRET:}
+      base-url: ${XUNFEI_IAT_BASE_URL:wss://ws-api.xfyun.cn/v2/iat}
+      path: ${XUNFEI_IAT_PATH:v2/iat}
+      lang: ${XUNFEI_IAT_LANG:zh_cn}
+      audio-encode: ${XUNFEI_IAT_AUDIO_ENCODE:raw}
+      sample-rate: ${XUNFEI_IAT_SAMPLE_RATE:16000}
+    tts:
+      provider: ${TTS_PROVIDER:xunfei}
+      xunfei:
+        enabled: ${XUNFEI_TTS_ENABLED:false}
+        app-id: ${XUNFEI_TTS_APP_ID:${XUNFEI_APP_ID:}}
+        api-key: ${XUNFEI_TTS_API_KEY:${XUNFEI_API_KEY:}}
+        api-secret: ${XUNFEI_TTS_API_SECRET:${XUNFEI_API_SECRET:}}
+        base-url: ${XUNFEI_TTS_BASE_URL:wss://tts-api.xfyun.cn/v2/tts}
+        voice: ${XUNFEI_TTS_VOICE:xiaoyan}
+        speed: ${XUNFEI_TTS_SPEED:50}
+        volume: ${XUNFEI_TTS_VOLUME:50}
+        pitch: ${XUNFEI_TTS_PITCH:50}
+        audio-encoding: ${XUNFEI_TTS_AUDIO_ENCODING:raw}
+        text-encoding: ${XUNFEI_TTS_TEXT_ENCODING:UTF8}
+        timeout-seconds: ${XUNFEI_TTS_TIMEOUT_SECONDS:20}
+        max-runes: ${XUNFEI_TTS_MAX_RUNES:800}
+      doubao:
+        enabled: ${DOUBAO_TTS_ENABLED:false}
+        app-id: ${DOUBAO_TTS_APP_ID:}
+        api-key: ${DOUBAO_TTS_API_KEY:}
+        base-url: ${DOUBAO_TTS_BASE_URL:https://openspeech.bytedance.com/api/v1/tts}
+        cluster: ${DOUBAO_TTS_CLUSTER:}
+        voice: ${DOUBAO_TTS_VOICE:}
+        encoding: ${DOUBAO_TTS_ENCODING:mp3}
+        uid: ${DOUBAO_TTS_UID:xzxg-shop}
+        text-type: ${DOUBAO_TTS_TEXT_TYPE:plain}
+        operation: ${DOUBAO_TTS_OPERATION:query}
+        with-frontend: ${DOUBAO_TTS_WITH_FRONTEND:1}
+        frontend-type: ${DOUBAO_TTS_FRONTEND_TYPE:text}
+        speed-ratio: ${DOUBAO_TTS_SPEED_RATIO:1.0}
+        volume-ratio: ${DOUBAO_TTS_VOLUME_RATIO:1.0}
+        pitch-ratio: ${DOUBAO_TTS_PITCH_RATIO:1.0}
+        max-runes: ${DOUBAO_TTS_MAX_RUNES:800}
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name:},%X{request_id:-}]"

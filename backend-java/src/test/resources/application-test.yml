@@ -1,0 +1,16 @@
+# Test profile: H2 only boots the context for infrastructure tests. Database
+# behaviour is verified separately against MySQL (see docs/migration), never here.
+spring:
+  datasource:
+    url: jdbc:h2:mem:xzxg_test;MODE=MySQL;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+  flyway:
+    enabled: false
+
+shop:
+  web:
+    max-request-body-bytes: 1024
+    rate-limit:
+      enabled: true
+      limit: 1000

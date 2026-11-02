@@ -279,3 +279,22 @@ curl http://localhost:8080/api/v1/health
 
 
 
+
+---
+
+## Java 后端（迁移版）
+
+`backend-java/` 是保留现有 Web/Android 客户端协议的 Java 21 + Spring Boot 4.1.2 实现。
+Go 后端保留为行为对照，Java 运行不依赖 Go 二进制。
+
+```bash
+cd backend-java
+mvnw.cmd clean verify
+java -jar target/shop-backend-0.1.0-SNAPSHOT.jar --spring.profiles.active=local
+```
+
+- 默认端口 `8082`，健康检查 `GET /api/v1/health`
+- 数据库：Flyway V1 创建 23 张表；旧库接管见 `docs/migration/DB_TAKEOVER.md`
+- 商品导入：`--shop.cli.import-products=true`
+- 配置、已实现接口与已知差异：`backend-java/README.md`、
+  `docs/migration/KNOWN_DIFFERENCES.md`

@@ -1,0 +1,9 @@
+# Local development profile. The Go backend always writes demo rows during
+# migration; the Java service only does so when this flag is enabled.
+shop:
+  seed:
+    demo-enabled: true
+
+logging:
+  level:
+    com.xzxg.shop: DEBUG
